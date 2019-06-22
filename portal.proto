@@ -1,0 +1,61 @@
+syntax = "proto3";
+package portalcore;
+
+// protoc --go_out=./portalcore portal.proto
+
+message HttpRequest {
+    string method = 1;
+    string url = 2;
+    string req_proto = 3;
+
+    message Header {
+        string key = 1;
+        repeated string value = 2;
+    }
+
+    repeated Header header = 4;
+    bytes body = 5;
+    string host = 6;
+    string remote_addr = 7;
+}
+
+message HttpResponse {
+    int32 status = 1;
+    repeated HttpRequest.Header header = 2;
+    bytes body = 3;
+}
+
+message LoginRequest {
+    string name = 1;
+}
+
+message HeartbeatPkg {
+    int64 timestamp = 1;
+}
+
+message AckResponse {
+    AckCode code = 1;
+}
+
+enum AckCode {
+    Success = 0;
+    NotLogin = 1;
+}
+
+message RpcHeader {
+    string method = 1;
+    string error = 2;
+    int32 seq = 3;
+}
+
+service Proxy {
+    rpc Login (LoginRequest) returns (AckResponse) {
+    }
+    rpc Heartbeat (HeartbeatPkg) returns (AckResponse) {
+    }
+}
+
+service Portal {
+    rpc Request (HttpRequest) returns (HttpResponse) {
+    }
+}
