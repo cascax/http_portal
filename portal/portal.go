@@ -266,7 +266,7 @@ func (p *LocalPortal) httpRequest(header *portalcore.RpcHeader, req *portalcore.
 		return
 	}
 	w := newHttpResponseWriter(p.bytesPool.Get().(*bytes.Buffer))
-	defer p.bytesPool.Put(w.buf)
+	defer p.bytesPool.Put(w.Buf)
 	p.handler.ServeHTTP(w, r)
 	w.mix()
 	p.sendHttpResponse(respHeader, &w.resp)
@@ -292,53 +292,75 @@ func parseHttpRequest(req *portalcore.HttpRequest) (*http.Request, error) {
 	for _, h := range req.Header {
 		r.Header[h.Key] = h.Value
 	}
+	r.Body = newBodyReader(req.Body)
 	var ok bool
 	if r.ProtoMajor, r.ProtoMinor, ok = http.ParseHTTPVersion(req.ReqProto); !ok {
 		return nil, errors.Errorf("%s malformed HTTP version", req.ReqProto)
 	}
 	var err error
 	// TODO: 只支持http
-	rawurl := fmt.Sprintf("http://%s/%s", req.Host, req.Url)
+	if req.Url[0] != '/' {
+		req.Url = "/" + req.Url
+	}
+	rawurl := fmt.Sprintf("http://%s%s", req.Host, req.Url)
 	if r.URL, err = url.ParseRequestURI(rawurl); err != nil {
 		return nil, errors.WithMessage(err, "parse uri error")
 	}
 	return r, nil
 }
 
-type httpResponseWriter struct {
+type HttpResponseWriter struct {
 	resp   portalcore.HttpResponse
 	header http.Header
-	buf    *bytes.Buffer
+	Buf    *bytes.Buffer
 }
 
-func (w *httpResponseWriter) Header() http.Header {
+func (w *HttpResponseWriter) Header() http.Header {
 	return w.header
 }
 
-func (w *httpResponseWriter) Write(data []byte) (int, error) {
-	return w.buf.Write(data)
+func (w *HttpResponseWriter) Write(data []byte) (int, error) {
+	return w.Buf.Write(data)
 }
 
-func (w *httpResponseWriter) WriteHeader(statusCode int) {
+func (w *HttpResponseWriter) WriteHeader(statusCode int) {
 	w.resp.Status = int32(statusCode)
 }
 
-func (w *httpResponseWriter) mix() {
+func (w *HttpResponseWriter) mix() {
 	for k, arr := range w.header {
 		w.resp.Header = append(w.resp.Header, &portalcore.HttpRequest_Header{
 			Key: k, Value: arr,
 		})
 	}
-	w.resp.Body = w.buf.Bytes()
+	w.resp.Body = w.Buf.Bytes()
 }
 
-func newHttpResponseWriter(buf *bytes.Buffer) *httpResponseWriter {
-	w := &httpResponseWriter{
+func newHttpResponseWriter(buf *bytes.Buffer) *HttpResponseWriter {
+	w := &HttpResponseWriter{
 		header: make(http.Header),
-		buf:    buf,
+		Buf:    buf,
 	}
 	w.resp.Status = 200
 	return w
+}
+
+type BodyReader struct {
+	Buf *bytes.Buffer
+}
+
+func (r *BodyReader) Read(p []byte) (n int, err error) {
+	return r.Buf.Read(p)
+}
+
+func (r *BodyReader) Close() error {
+	return nil
+}
+
+func newBodyReader(data []byte) *BodyReader {
+	return &BodyReader{
+		Buf: bytes.NewBuffer(data),
+	}
 }
 
 type defaultLogger int
