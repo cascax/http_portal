@@ -5,6 +5,12 @@ import (
 	"go.uber.org/zap"
 	"io/ioutil"
 	"net/http"
+	"strconv"
+	"strings"
+)
+
+const (
+	MaxPortalDeep = 5
 )
 
 type httpHandler struct {
@@ -19,11 +25,12 @@ func (f httpHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	//w.Write([]byte("\n\n"))
 	//w.Write([]byte(fmt.Sprintf("%+v", r.RequestURI)))
 	log.Infof("http %s %s", r.Method, r.RequestURI)
+
 	req := &portalcore.HttpRequest{
-		Method: r.Method,
-		Url: r.URL.String(),
-		ReqProto: r.Proto,
-		Host: r.Host,
+		Method:     r.Method,
+		Url:        r.URL.String(),
+		ReqProto:   r.Proto,
+		Host:       r.Host,
 		RemoteAddr: r.RemoteAddr,
 	}
 	if r.Body != nil {
@@ -36,13 +43,45 @@ func (f httpHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		req.Body = data
 	}
+	withDeep := false
+	// check recursive
+	if v := r.Header.Get(portalcore.PortalHeaderDeep); len(v) > 0 {
+		// 处理递归调用 在HTTP头中带个独有的深度信息
+		if deep, err := strconv.Atoi(v); err == nil {
+			if deep > MaxPortalDeep || r.Header.Get(portalcore.PortalHeaderHost) == r.Host {
+				// portal中次数超过深度 or 上一次也是从当前host传送的，也就是说下一次解析这个host还会再从这走
+				w.WriteHeader(500)
+				log.Errorf("http %s %s, over max portal deep", r.Method, r.RequestURI)
+				w.Write([]byte("over max portal deep"))
+				return
+			}
+			req.Header = append(req.Header, &portalcore.HttpRequest_Header{
+				Key:   portalcore.PortalHeaderDeep,
+				Value: []string{strconv.Itoa(deep + 1)},
+			})
+			withDeep = true
+		}
+	}
 	for k, arr := range r.Header {
+		if strings.HasPrefix(k, portalcore.PortalHeaderPrefix) {
+			continue
+		}
 		h := &portalcore.HttpRequest_Header{Key: k}
 		for _, v := range arr {
 			h.Value = append(h.Value, v)
 		}
 		req.Header = append(req.Header, h)
 	}
+	if !withDeep {
+		req.Header = append(req.Header, &portalcore.HttpRequest_Header{
+			Key:   portalcore.PortalHeaderDeep,
+			Value: []string{"1"},
+		})
+	}
+	req.Header = append(req.Header, &portalcore.HttpRequest_Header{
+		Key:   portalcore.PortalHeaderHost,
+		Value: []string{r.Host},
+	})
 
 	resp, err := f.proxyServer.DoRequest(req)
 	if err != nil {
