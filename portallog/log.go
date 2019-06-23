@@ -12,11 +12,11 @@ import (
 var pid = os.Getpid()
 
 const (
-	cReset    = 0
-	cRed      = 31
-	cGreen    = 32
-	cYellow   = 33
-	cMagenta  = 35
+	cReset   = 0
+	cRed     = 31
+	cGreen   = 32
+	cYellow  = 33
+	cMagenta = 35
 )
 
 type ZapLogger struct {
@@ -53,11 +53,11 @@ func levelColor(level zapcore.Level) int {
 	}
 }
 
-func NewLog(options ...zap.Option) (*ZapLogger, error) {
+func NewLog(conf LogConfig, options ...zap.Option) (*ZapLogger, error) {
 	writer := &lumberjack.Logger{
-		Filename:   "./server.log",
-		MaxSize:    100,
-		MaxBackups: 10,
+		Filename:   conf.Filename(),
+		MaxSize:    conf.MaxSize,
+		MaxBackups: conf.MaxBackup,
 		LocalTime:  true,
 		Compress:   false,
 	}

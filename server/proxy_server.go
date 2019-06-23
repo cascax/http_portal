@@ -27,13 +27,15 @@ func NewProxyServer(host string) *ProxyServer {
 		clients: NewPortalManager(),
 		hosts:   make(map[string]string),
 	}
-	s.getHosts()
 	return s
 }
 
-func (s *ProxyServer) getHosts() {
-	// TODO: 改成读配置
-	s.hosts["local.mccode.info:8080"] = "mccode"
+func (s *ProxyServer) SetHosts(config map[string][]string) {
+	for name, arr := range config {
+		for _, host := range arr {
+			s.hosts[host] = name
+		}
+	}
 }
 
 func (s *ProxyServer) Start() error {

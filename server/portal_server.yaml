@@ -1,0 +1,16 @@
+http_server:
+  listen: 127.0.0.1
+  port: 8080
+
+proxy_server:
+  listen: 127.0.0.1
+  port: 10625
+  portal:
+    mccode:
+      - "local.mccode.info:8080"
+
+log:
+  path: "."
+  name: server.log
+  max_size: 100
+  max_backup: 5
