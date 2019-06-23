@@ -67,7 +67,7 @@ func NewLog(conf LogConfig, options ...zap.Option) (*ZapLogger, error) {
 	}
 
 	atom := zap.NewAtomicLevel()
-	atom.SetLevel(zapcore.WarnLevel)
+	atom.SetLevel(conf.ZapLevel())
 	config := zap.NewProductionEncoderConfig()
 	config.EncodeTime = localTimeEncoder
 	config.EncodeLevel = levelEncoder

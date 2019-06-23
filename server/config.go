@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	DefaultConfigName = "portal_server.yaml"
+	DefaultConfigName = "portal_server.yml"
 )
 
 type ServerConfig struct {

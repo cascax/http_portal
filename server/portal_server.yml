@@ -14,3 +14,4 @@ log:
   name: server.log
   max_size: 100
   max_backup: 5
+  level: info

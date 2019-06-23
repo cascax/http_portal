@@ -32,6 +32,7 @@ func main() {
 	f := &startFlag{}
 	flag.StringVar(&f.Config, "c", defaultConfig(), "set configuration `file`")
 	flag.BoolVar(&f.Verbose, "v", false, "print log to console")
+	flag.Parse()
 	fmt.Printf("start on param %+v\n", f)
 
 	config, err := ReadConfig(f.Config)
@@ -42,6 +43,7 @@ func main() {
 	if f.Verbose {
 		log = portallog.NewConsoleLog()
 	} else {
+		fmt.Println("log file:", config.Log.Filename())
 		log, err = portallog.NewLog(config.Log)
 		if err != nil {
 			panic(err)
