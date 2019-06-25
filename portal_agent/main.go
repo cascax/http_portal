@@ -1,11 +1,16 @@
 package main
 
 import (
+	"flag"
+	"fmt"
 	"github.com/cascax/http_portal/portal"
 	"github.com/cascax/http_portal/portallog"
 	"go.uber.org/zap"
 	"net/http"
 	"net/url"
+	"os"
+	"path"
+	"path/filepath"
 	"time"
 )
 
@@ -58,18 +63,57 @@ func (h *RequestHandler) getUrl(url url.URL) string {
 	return url.String()
 }
 
+func defaultConfig() string {
+	configPath, err := filepath.Abs(filepath.Dir(os.Args[0]))
+	if err != nil {
+		panic("can't get config path, " + err.Error())
+	}
+	return path.Join(configPath, DefaultConfigName)
+}
+
 func init() {
 	log = portallog.NewConsoleLog(zap.AddCallerSkip(1))
 	portal.SetLogger(&logger{log.Logger.Sugar()})
 }
 
 func main() {
-	// TODO: 可配置
+	f := &startFlag{}
+	flag.StringVar(&f.Config, "c", defaultConfig(), "set configuration `file`")
+	flag.BoolVar(&f.Verbose, "v", false, "print log to console")
+	flag.Parse()
+	fmt.Printf("start on param %+v\n", f)
+
+	config, err := ReadConfig(f.Config)
+	if err != nil {
+		panic(err)
+	}
+
+	if f.Verbose {
+		log = portallog.NewConsoleLog()
+	} else {
+		fmt.Println("log file:", config.Log.Filename())
+		log, err = portallog.NewLog(config.Log)
+		if err != nil {
+			panic(err)
+		}
+	}
+
+	log.Infof("start on param %+v", f)
+	log.Infof("config: %+v", config)
+	if len(config.Agent.Name) == 0 {
+		panic("agent.name not configured")
+	}
+	if len(config.Agent.RemoteAddr) == 0 {
+		panic("agent.remote_addr not configured")
+	}
+
 	handler := &RequestHandler{
 		hostRewrite: make(map[string]string),
 	}
-	handler.hostRewrite["local.mccode.info:8080"] = "local.mccode.info:8081"
-	portal.NewLocalPortal("mccode", handler, "127.0.0.1:10625").Run()
+	for k, v := range config.Agent.HostRewrite {
+		handler.hostRewrite[k] = v
+	}
+	portal.NewLocalPortal(config.Agent.Name, handler, config.Agent.RemoteAddr).Run()
 }
 
 type logger struct {
@@ -82,4 +126,9 @@ func (l *logger) Printf(template string, args ...interface{}) {
 
 func (l *logger) Errorf(template string, args ...interface{}) {
 	l.sugar.Errorf(template, args...)
+}
+
+type startFlag struct {
+	Config  string
+	Verbose bool
 }
