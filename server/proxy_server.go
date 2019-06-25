@@ -1,8 +1,8 @@
 package main
 
 import (
+	"github.com/cascax/http_portal/portalcore"
 	"github.com/golang/protobuf/proto"
-	"github.com/mcxr4299/http_portal/portalcore"
 	"github.com/pkg/errors"
 	"go.uber.org/zap"
 	"golang.org/x/net/context"

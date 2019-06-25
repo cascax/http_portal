@@ -3,7 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
-	"github.com/mcxr4299/http_portal/portallog"
+	"github.com/cascax/http_portal/portallog"
 	"go.uber.org/zap"
 	"os"
 	"path"

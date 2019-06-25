@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	"github.com/mcxr4299/http_portal/portallog"
+	"github.com/cascax/http_portal/portallog"
 	"github.com/pkg/errors"
 	"gopkg.in/yaml.v2"
 	"io/ioutil"

@@ -1,8 +1,8 @@
 package main
 
 import (
-	"github.com/mcxr4299/http_portal/portal"
-	"github.com/mcxr4299/http_portal/portallog"
+	"github.com/cascax/http_portal/portal"
+	"github.com/cascax/http_portal/portallog"
 	"go.uber.org/zap"
 	"net/http"
 	"net/url"

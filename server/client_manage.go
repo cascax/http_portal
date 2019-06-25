@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/mcxr4299/http_portal/portalcore"
+	"github.com/cascax/http_portal/portalcore"
 	"github.com/pkg/errors"
 	"net"
 	"sync"
