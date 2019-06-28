@@ -48,14 +48,10 @@ message RpcHeader {
     int32 seq = 3;
 }
 
-service Proxy {
-    rpc Login (LoginRequest) returns (AckResponse) {
-    }
-    rpc Heartbeat (HeartbeatPkg) returns (AckResponse) {
-    }
-}
-
-service Portal {
-    rpc Request (HttpRequest) returns (HttpResponse) {
-    }
-}
+//service Proxy {
+//    rpc Login (LoginRequest) returns (AckResponse) {}
+//    rpc Heartbeat (HeartbeatPkg) returns (AckResponse) {}
+//}
+//service Portal {
+//    rpc Request (HttpRequest) returns (HttpResponse) {}
+//}

@@ -6,7 +6,6 @@ import (
 	"github.com/pkg/errors"
 	"go.uber.org/zap"
 	"golang.org/x/net/context"
-	"google.golang.org/grpc"
 	"net"
 	"sync"
 	"time"
@@ -15,7 +14,6 @@ import (
 type ProxyServer struct {
 	host     string
 	listener *net.TCPListener
-	server   *grpc.Server
 	clients  *PortalManager
 	quit     chan struct{}
 	hosts    map[string]string
