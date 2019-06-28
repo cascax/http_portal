@@ -4,7 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/cascax/http_portal/portal"
-	"github.com/cascax/http_portal/portallog"
+	"github.com/cascax/http_portal/ptlog"
 	"go.uber.org/zap"
 	"net/http"
 	"net/url"
@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-var log *portallog.ZapLogger
+var log *ptlog.ZapLogger
 
 type RequestHandler struct {
 	hostRewrite map[string]string
@@ -72,7 +72,7 @@ func defaultConfig() string {
 }
 
 func init() {
-	log = portallog.NewConsoleLog(zap.AddCallerSkip(1))
+	log = ptlog.NewConsoleLog(zap.AddCallerSkip(1))
 	portal.SetLogger(&logger{log.Logger.Sugar()})
 }
 
@@ -89,10 +89,10 @@ func main() {
 	}
 
 	if f.Verbose {
-		log = portallog.NewConsoleLog()
+		log = ptlog.NewConsoleLog()
 	} else {
 		fmt.Println("log file:", config.Log.Filename())
-		log, err = portallog.NewLog(config.Log)
+		log, err = ptlog.NewLog(config.Log)
 		if err != nil {
 			panic(err)
 		}

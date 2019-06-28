@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/cascax/http_portal/portalcore"
+	"github.com/cascax/http_portal/core"
 	"github.com/golang/protobuf/proto"
 	"github.com/pkg/errors"
 	"go.uber.org/zap"
@@ -58,10 +58,10 @@ func (s *ProxyServer) accept() {
 	for {
 		rawConn, err := s.listener.Accept()
 		if err != nil {
-			if portalcore.IsTemporary(err) {
-				tempDelay = portalcore.CalcDelay(tempDelay)
+			if core.IsTemporary(err) {
+				tempDelay = core.CalcDelay(tempDelay)
 				log.Infof("Accept error: %v; retrying in %v", err, tempDelay)
-				portalcore.Sleep(tempDelay, s.quit)
+				core.Sleep(tempDelay, s.quit)
 				continue
 			}
 			logger.Info("done serving Accept", zap.Error(err))
@@ -79,8 +79,8 @@ func (s *ProxyServer) accept() {
 	}
 }
 
-func (s *ProxyServer) DoRequest(req *portalcore.HttpRequest) (*portalcore.HttpResponse, error) {
-	errResp := &portalcore.HttpResponse{Status: 500}
+func (s *ProxyServer) DoRequest(req *core.HttpRequest) (*core.HttpResponse, error) {
+	errResp := &core.HttpResponse{Status: 500}
 	name, ok := s.hosts[req.Host]
 	if !ok {
 		errResp.Status = 404
@@ -94,14 +94,14 @@ func (s *ProxyServer) DoRequest(req *portalcore.HttpRequest) (*portalcore.HttpRe
 		return errResp, errors.New("client not found")
 	}
 	seq, respCh := client.PrepareRequest()
-	header := &portalcore.RpcHeader{
+	header := &core.RpcHeader{
 		Method: "http_do",
 		Seq:    seq,
 	}
 	ctx := context.Background()
 	ctx = context.WithValue(ctx, "lock", &client.sendMux)
 	ctx, _ = context.WithTimeout(ctx, 5*time.Second)
-	err := portalcore.Send(context.Background(), client.Conn, header, req)
+	err := core.Send(context.Background(), client.Conn, header, req)
 	if err != nil {
 		logger.Error("send req error", zap.Error(err))
 		return errResp, errors.New("request error")
@@ -117,7 +117,7 @@ func (s *ProxyServer) DoRequest(req *portalcore.HttpRequest) (*portalcore.HttpRe
 			logger.Error("http response has error", zap.Error(err))
 			return errResp, errors.New(resp.Header.Error)
 		}
-		return resp.Msg.(*portalcore.HttpResponse), nil
+		return resp.Msg.(*core.HttpResponse), nil
 	}
 }
 
@@ -137,31 +137,31 @@ type proxyService struct {
 	clients *PortalManager
 }
 
-func (s *proxyService) GetMsg(header *portalcore.RpcHeader) (proto.Message, error) {
+func (s *proxyService) GetMsg(header *core.RpcHeader) (proto.Message, error) {
 	switch header.Method {
 	// 前两者为请求
-	case portalcore.MethodLogin:
-		return &portalcore.LoginRequest{}, nil
-	case portalcore.MethodHeartbeat:
-		return &portalcore.HeartbeatPkg{}, nil
+	case core.MethodLogin:
+		return &core.LoginRequest{}, nil
+	case core.MethodHeartbeat:
+		return &core.HeartbeatPkg{}, nil
 
 	// 此为响应
-	case "resp_" + portalcore.MethodHttpDo:
-		return &portalcore.HttpResponse{}, nil
+	case "resp_" + core.MethodHttpDo:
+		return &core.HttpResponse{}, nil
 
 	default:
 		return nil, errors.Errorf("method(%s) not support", header.Method)
 	}
 }
 
-func (s *proxyService) processMsg(header *portalcore.RpcHeader, message proto.Message) (proto.Message, error) {
+func (s *proxyService) processMsg(header *core.RpcHeader, message proto.Message) (proto.Message, error) {
 	switch header.Method {
-	case portalcore.MethodLogin:
-		return s.Login(message.(*portalcore.LoginRequest))
-	case portalcore.MethodHeartbeat:
-		return s.Heartbeat(message.(*portalcore.HeartbeatPkg))
-	case "resp_" + portalcore.MethodHttpDo:
-		return nil, s.SendHttpResponse(header, message.(*portalcore.HttpResponse))
+	case core.MethodLogin:
+		return s.Login(message.(*core.LoginRequest))
+	case core.MethodHeartbeat:
+		return s.Heartbeat(message.(*core.HeartbeatPkg))
+	case "resp_" + core.MethodHttpDo:
+		return nil, s.SendHttpResponse(header, message.(*core.HttpResponse))
 	default:
 		return nil, errors.Errorf("method(%s) not support", header.Method)
 	}
@@ -179,25 +179,25 @@ func (s *proxyService) keepConnection() {
 	}()
 	var tempDelay time.Duration
 	for {
-		header, msg, err := portalcore.Receive(ctx, s.conn, s.GetMsg, true)
+		header, msg, err := core.Receive(ctx, s.conn, s.GetMsg, true)
 		if err != nil {
-			if portalcore.IsClose(err) {
+			if core.IsClose(err) {
 				logger.Error("receive error, close conn", zap.String("remote", s.conn.RemoteAddr().String()),
 					zap.Error(err), zap.String("name", s.client.Name))
 				break
 			}
-			tempDelay = portalcore.CalcDelay(tempDelay)
+			tempDelay = core.CalcDelay(tempDelay)
 			logger.Error("receive error", zap.String("remote", s.conn.RemoteAddr().String()),
 				zap.Error(err), zap.Duration("retry", tempDelay))
 			if s.client != nil {
-				portalcore.Sleep(tempDelay, s.client.quit)
+				core.Sleep(tempDelay, s.client.quit)
 			} else {
 				time.Sleep(tempDelay)
 			}
 			continue
 		}
 
-		respHeader := portalcore.NewResponseHeader(header)
+		respHeader := core.NewResponseHeader(header)
 		resp, err := s.processMsg(header, msg)
 		if err != nil {
 			log.Error("service call error, ", err)
@@ -213,9 +213,9 @@ func (s *proxyService) keepConnection() {
 			defer wg.Done()
 			tc := context.WithValue(ctx, "lock", &s.client.sendMux)
 			tc, _ = context.WithTimeout(tc, time.Second*10)
-			err = portalcore.Send(tc, s.conn, respHeader, resp)
+			err = core.Send(tc, s.conn, respHeader, resp)
 			if err != nil {
-				if !portalcore.IsTemporary(err) {
+				if !core.IsTemporary(err) {
 					log.Error("send resp error, close conn. ", err)
 					_ = s.conn.Close()
 					return
@@ -227,29 +227,29 @@ func (s *proxyService) keepConnection() {
 	wg.Wait()
 }
 
-func (s *proxyService) Login(req *portalcore.LoginRequest) (*portalcore.AckResponse, error) {
+func (s *proxyService) Login(req *core.LoginRequest) (*core.AckResponse, error) {
 	s.client.Name = req.Name
 	err := s.clients.Add(s.client)
 	if err != nil {
 		return nil, err
 	}
 	logger.Info("new client login", zap.String("name", s.client.Name))
-	return &portalcore.AckResponse{Code: portalcore.AckCode_Success}, nil
+	return &core.AckResponse{Code: core.AckCode_Success}, nil
 }
 
-func (s *proxyService) Heartbeat(req *portalcore.HeartbeatPkg) (*portalcore.AckResponse, error) {
+func (s *proxyService) Heartbeat(req *core.HeartbeatPkg) (*core.AckResponse, error) {
 	if s.client.Name == "" {
-		return &portalcore.AckResponse{Code: portalcore.AckCode_NotLogin}, nil
+		return &core.AckResponse{Code: core.AckCode_NotLogin}, nil
 	}
 	s.client.Beat()
-	return &portalcore.AckResponse{Code: portalcore.AckCode_Success}, nil
+	return &core.AckResponse{Code: core.AckCode_Success}, nil
 }
 
-func (s *proxyService) SendHttpResponse(header *portalcore.RpcHeader, resp *portalcore.HttpResponse) error {
+func (s *proxyService) SendHttpResponse(header *core.RpcHeader, resp *core.HttpResponse) error {
 	if s.client.Name == "" {
 		return errors.New("client not login")
 	}
-	err := s.client.SendResponse(header.Seq, &portalcore.RpcMessage{Header: header, Msg: resp})
+	err := s.client.SendResponse(header.Seq, &core.RpcMessage{Header: header, Msg: resp})
 	if err != nil {
 		logger.Error("client send resp error", zap.String("name", s.client.Name),
 			zap.Error(err))

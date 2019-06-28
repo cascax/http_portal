@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/cascax/http_portal/portalcore"
+	"github.com/cascax/http_portal/core"
 	"github.com/pkg/errors"
 	"net"
 	"sync"
@@ -11,7 +11,7 @@ import (
 var HeartbeatInterval = 5 * time.Second
 
 type PortalClient struct {
-	portalcore.MessageReceiver
+	core.MessageReceiver
 	Conn     net.Conn
 	Name     string
 	LastBeat time.Time

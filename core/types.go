@@ -1,4 +1,4 @@
-package portalcore
+package core
 
 const (
 	MethodLogin     = "login"

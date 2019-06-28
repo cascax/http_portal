@@ -3,7 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
-	"github.com/cascax/http_portal/portallog"
+	"github.com/cascax/http_portal/ptlog"
 	"go.uber.org/zap"
 	"os"
 	"path"
@@ -11,7 +11,7 @@ import (
 )
 
 var (
-	log    *portallog.ZapLogger
+	log    *ptlog.ZapLogger
 	logger *zap.Logger
 )
 
@@ -41,10 +41,10 @@ func main() {
 	}
 
 	if f.Verbose {
-		log = portallog.NewConsoleLog()
+		log = ptlog.NewConsoleLog()
 	} else {
 		fmt.Println("log file:", config.Log.Filename())
-		log, err = portallog.NewLog(config.Log)
+		log, err = ptlog.NewLog(config.Log)
 		if err != nil {
 			panic(err)
 		}

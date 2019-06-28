@@ -3,7 +3,7 @@ package portal
 import (
 	"bytes"
 	"fmt"
-	"github.com/cascax/http_portal/portalcore"
+	"github.com/cascax/http_portal/core"
 	"github.com/golang/protobuf/proto"
 	"github.com/pkg/errors"
 	"golang.org/x/net/context"
@@ -27,7 +27,7 @@ type LocalPortal struct {
 	remoteHost string
 	conn       net.Conn
 	sendLock   sync.Mutex
-	receiver   portalcore.MessageReceiver
+	receiver   core.MessageReceiver
 	isLogin    bool
 	bytesPool  sync.Pool
 	quit       chan struct{}
@@ -78,16 +78,16 @@ func (p *LocalPortal) connect() error {
 func (p *LocalPortal) login() error {
 	seq, respCh := p.receiver.PrepareRequest()
 	defer p.receiver.DeleteSeq(seq)
-	header := &portalcore.RpcHeader{
-		Method: portalcore.MethodLogin,
+	header := &core.RpcHeader{
+		Method: core.MethodLogin,
 		Seq:    seq,
 	}
-	req := &portalcore.LoginRequest{
+	req := &core.LoginRequest{
 		Name: p.name,
 	}
 	ctx, _ := context.WithTimeout(context.Background(), 5*time.Second)
 	ctx = context.WithValue(ctx, "lock", &p.sendLock)
-	err := portalcore.Send(ctx, p.conn, header, req)
+	err := core.Send(ctx, p.conn, header, req)
 	if err != nil {
 		return errors.WithMessagef(err, "send error, seq(%d)", seq)
 	}
@@ -101,8 +101,8 @@ func (p *LocalPortal) login() error {
 		if respPkg.Header.Error != "" {
 			return errors.WithMessage(errors.New(respPkg.Header.Error), "login error")
 		}
-		resp := respPkg.Msg.(*portalcore.AckResponse)
-		if resp.Code != portalcore.AckCode_Success {
+		resp := respPkg.Msg.(*core.AckResponse)
+		if resp.Code != core.AckCode_Success {
 			return errors.Errorf("login failed, code:%d", resp.Code)
 		} else {
 			logger.Printf("login success")
@@ -140,18 +140,18 @@ func (p *LocalPortal) heartbeat() (succ bool) {
 	}
 	ctx := context.Background()
 	seq, respCh := p.receiver.PrepareRequest()
-	respHeader := &portalcore.RpcHeader{
-		Method: portalcore.MethodHeartbeat,
+	respHeader := &core.RpcHeader{
+		Method: core.MethodHeartbeat,
 		Seq:    seq,
 	}
-	req := &portalcore.HeartbeatPkg{
+	req := &core.HeartbeatPkg{
 		Timestamp: time.Now().Unix(),
 	}
 	tc := context.WithValue(ctx, "lock", p.sendLock)
 	tc, _ = context.WithTimeout(ctx, time.Second*5)
-	err := portalcore.Send(tc, p.conn, respHeader, req)
+	err := core.Send(tc, p.conn, respHeader, req)
 	if err != nil {
-		if !portalcore.IsTemporary(err) {
+		if !core.IsTemporary(err) {
 			logger.Errorf("send heartbeat error, close conn, %s", err.Error())
 			err = p.connect()
 			if err != nil {
@@ -167,10 +167,10 @@ func (p *LocalPortal) heartbeat() (succ bool) {
 	case <-tc.Done():
 		logger.Errorf("heartbeat canceled, %s", tc.Err())
 	case respPkg := <-respCh:
-		resp := respPkg.Msg.(*portalcore.AckResponse)
-		if resp.Code != portalcore.AckCode_Success {
+		resp := respPkg.Msg.(*core.AckResponse)
+		if resp.Code != core.AckCode_Success {
 			logger.Errorf("heartbeat error, code:%d", resp.Code)
-			if resp.Code == portalcore.AckCode_NotLogin {
+			if resp.Code == core.AckCode_NotLogin {
 				// 重新登录
 				p.isLogin = false
 				err = p.login()
@@ -195,19 +195,19 @@ func (p *LocalPortal) receive() {
 			break
 		default:
 		}
-		header, msg, err := portalcore.Receive(ctx, p.conn, p.getMsg, true)
+		header, msg, err := core.Receive(ctx, p.conn, p.getMsg, true)
 		if err != nil {
-			if portalcore.IsClose(err) {
+			if core.IsClose(err) {
 				logger.Errorf("receive error, close conn, remote:%s err:%s", p.conn.RemoteAddr(), err)
 				return
 			}
-			tempDelay = portalcore.CalcDelay(tempDelay)
+			tempDelay = core.CalcDelay(tempDelay)
 			logger.Errorf("receive error, retry in:%s, remote:%s error:%s", tempDelay, p.conn.RemoteAddr(), err)
-			portalcore.Sleep(tempDelay, p.quit)
+			core.Sleep(tempDelay, p.quit)
 			continue
 		}
 
-		respHeader := &portalcore.RpcHeader{}
+		respHeader := &core.RpcHeader{}
 		tc := context.WithValue(ctx, "lock", p.sendLock)
 		tc, _ = context.WithTimeout(tc, time.Second*10)
 		err = p.processMsg(header, msg)
@@ -218,46 +218,46 @@ func (p *LocalPortal) receive() {
 	}
 }
 
-func (p *LocalPortal) getMsg(header *portalcore.RpcHeader) (proto.Message, error) {
+func (p *LocalPortal) getMsg(header *core.RpcHeader) (proto.Message, error) {
 	switch header.Method {
-	case portalcore.MethodHttpDo:
-		return &portalcore.HttpRequest{}, nil
-	case "resp_" + portalcore.MethodLogin:
+	case core.MethodHttpDo:
+		return &core.HttpRequest{}, nil
+	case "resp_" + core.MethodLogin:
 		return p.loginGetMsg(header)
-	case "resp_" + portalcore.MethodHeartbeat:
-		return &portalcore.AckResponse{}, nil
+	case "resp_" + core.MethodHeartbeat:
+		return &core.AckResponse{}, nil
 	default:
 		return nil, errors.New("method not support")
 	}
 }
 
-func (p *LocalPortal) processMsg(header *portalcore.RpcHeader, msg proto.Message) error {
+func (p *LocalPortal) processMsg(header *core.RpcHeader, msg proto.Message) error {
 	switch header.Method {
-	case portalcore.MethodHttpDo:
-		go p.httpRequest(header, msg.(*portalcore.HttpRequest))
+	case core.MethodHttpDo:
+		go p.httpRequest(header, msg.(*core.HttpRequest))
 		return nil
-	case "resp_" + portalcore.MethodLogin:
-		return p.receiver.SendResponse(header.Seq, &portalcore.RpcMessage{Header: header, Msg: msg})
-	case "resp_" + portalcore.MethodHeartbeat:
-		return p.receiver.SendResponse(header.Seq, &portalcore.RpcMessage{Header: header, Msg: msg})
+	case "resp_" + core.MethodLogin:
+		return p.receiver.SendResponse(header.Seq, &core.RpcMessage{Header: header, Msg: msg})
+	case "resp_" + core.MethodHeartbeat:
+		return p.receiver.SendResponse(header.Seq, &core.RpcMessage{Header: header, Msg: msg})
 	default:
 		return errors.New("method not support")
 	}
 }
 
-func (p *LocalPortal) loginGetMsg(header *portalcore.RpcHeader) (proto.Message, error) {
+func (p *LocalPortal) loginGetMsg(header *core.RpcHeader) (proto.Message, error) {
 	if len(header.Error) > 0 {
 		return nil, errors.New("login failed, " + header.Error)
 	}
-	if header.Method != "resp_"+portalcore.MethodLogin {
+	if header.Method != "resp_"+core.MethodLogin {
 		return nil, errors.New("login resp error")
 	}
-	return &portalcore.AckResponse{}, nil
+	return &core.AckResponse{}, nil
 }
 
-func (p *LocalPortal) httpRequest(header *portalcore.RpcHeader, req *portalcore.HttpRequest) {
-	errResp := &portalcore.HttpResponse{Status: 500}
-	respHeader := portalcore.NewResponseHeader(header)
+func (p *LocalPortal) httpRequest(header *core.RpcHeader, req *core.HttpRequest) {
+	errResp := &core.HttpResponse{Status: 500}
+	respHeader := core.NewResponseHeader(header)
 	r, err := parseHttpRequest(req)
 	if err != nil {
 		logger.Errorf("parse http request error, %s", err.Error())
@@ -272,15 +272,15 @@ func (p *LocalPortal) httpRequest(header *portalcore.RpcHeader, req *portalcore.
 	p.sendHttpResponse(respHeader, &w.resp)
 }
 
-func (p *LocalPortal) sendHttpResponse(header *portalcore.RpcHeader, resp *portalcore.HttpResponse) {
+func (p *LocalPortal) sendHttpResponse(header *core.RpcHeader, resp *core.HttpResponse) {
 	ctx := context.Background()
-	err := portalcore.Send(ctx, p.conn, header, resp)
+	err := core.Send(ctx, p.conn, header, resp)
 	if err != nil {
 		logger.Errorf("send http response error, %s", err.Error())
 	}
 }
 
-func parseHttpRequest(req *portalcore.HttpRequest) (*http.Request, error) {
+func parseHttpRequest(req *core.HttpRequest) (*http.Request, error) {
 	r := &http.Request{
 		Method:     req.Method,
 		Proto:      req.ReqProto,
@@ -310,7 +310,7 @@ func parseHttpRequest(req *portalcore.HttpRequest) (*http.Request, error) {
 }
 
 type HttpResponseWriter struct {
-	resp   portalcore.HttpResponse
+	resp   core.HttpResponse
 	header http.Header
 	Buf    *bytes.Buffer
 }
@@ -329,7 +329,7 @@ func (w *HttpResponseWriter) WriteHeader(statusCode int) {
 
 func (w *HttpResponseWriter) mix() {
 	for k, arr := range w.header {
-		w.resp.Header = append(w.resp.Header, &portalcore.HttpRequest_Header{
+		w.resp.Header = append(w.resp.Header, &core.HttpRequest_Header{
 			Key: k, Value: arr,
 		})
 	}

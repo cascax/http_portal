@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	"github.com/cascax/http_portal/portallog"
+	"github.com/cascax/http_portal/ptlog"
 	"github.com/pkg/errors"
 	"gopkg.in/yaml.v2"
 	"io/ioutil"
@@ -15,7 +15,7 @@ const (
 type ServerConfig struct {
 	HttpServer  ProxyConfig `yaml:"http_server"`
 	ProxyServer HttpConfig  `yaml:"proxy_server"`
-	Log         portallog.LogConfig
+	Log         ptlog.LogConfig
 }
 
 type ProxyConfig struct {
@@ -52,7 +52,7 @@ func ReadConfig(filename string) (*ServerConfig, error) {
 			Port:   10625,
 			Portal: make(map[string][]string),
 		},
-		Log: portallog.LogConfig{
+		Log: ptlog.LogConfig{
 			Path:      ".",
 			Name:      "server.log",
 			MaxSize:   20,

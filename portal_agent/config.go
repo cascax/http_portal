@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/cascax/http_portal/portallog"
+	"github.com/cascax/http_portal/ptlog"
 	"github.com/pkg/errors"
 	"gopkg.in/yaml.v2"
 	"io/ioutil"
@@ -13,7 +13,7 @@ const (
 
 type ServerConfig struct {
 	Agent AgentConfig `yaml:"portal_agent"`
-	Log   portallog.LogConfig
+	Log   ptlog.LogConfig
 }
 
 type AgentConfig struct {
@@ -31,7 +31,7 @@ func ReadConfig(filename string) (*ServerConfig, error) {
 		Agent: AgentConfig{
 			HostRewrite: make(map[string]string),
 		},
-		Log: portallog.LogConfig{
+		Log: ptlog.LogConfig{
 			Path:      ".",
 			Name:      "agent.log",
 			MaxSize:   20,

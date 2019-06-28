@@ -1,4 +1,4 @@
-package portalcore
+package core
 
 import (
 	"context"

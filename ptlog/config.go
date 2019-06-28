@@ -1,4 +1,4 @@
-package portallog
+package ptlog
 
 import (
 	"go.uber.org/zap"
