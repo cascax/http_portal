@@ -21,14 +21,21 @@ type RequestHandler struct {
 }
 
 func (h *RequestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	err := h.serveHTTP(w, r)
+	if err != nil {
+		log.Error("write response error, ", err)
+	}
+}
+
+func (h *RequestHandler) serveHTTP(w http.ResponseWriter, r *http.Request) error {
 	log.Infof("%s %s", r.Method, r.URL.String())
 	newUrl := h.getUrl(*r.URL)
 	req, err := http.NewRequest(r.Method, newUrl, r.Body)
 	if err != nil {
 		log.Error("make request error, ", err)
 		w.WriteHeader(500)
-		w.Write([]byte(err.Error()))
-		return
+		_, err = w.Write([]byte(err.Error()))
+		return err
 	}
 	defer req.Body.Close()
 	for k, arr := range r.Header {
@@ -41,8 +48,8 @@ func (h *RequestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Error("do request error, ", err)
 		w.WriteHeader(500)
-		w.Write([]byte(err.Error()))
-		return
+		_, err = w.Write([]byte(err.Error()))
+		return err
 	}
 	w.WriteHeader(resp.StatusCode)
 	for k, arr := range resp.Header {
@@ -52,10 +59,8 @@ func (h *RequestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	writer := w.(*portal.HttpResponseWriter)
 	_, err = writer.Buf.ReadFrom(resp.Body)
-	if err != nil {
-		log.Error("write response error, ", err)
-	}
 	log.Debugf("write resp body len:%d", writer.Buf.Len())
+	return err
 }
 
 func (h *RequestHandler) getUrl(url url.URL) string {
@@ -73,11 +78,6 @@ func defaultConfig() string {
 	return path.Join(configPath, DefaultConfigName)
 }
 
-func init() {
-	log = ptlog.NewConsoleLog(zap.AddCallerSkip(1))
-	portal.SetLogger(&logger{log.Logger.Sugar()})
-}
-
 func main() {
 	f := &startFlag{}
 	flag.StringVar(&f.Config, "c", defaultConfig(), "set configuration `file`")
@@ -91,15 +91,16 @@ func main() {
 	}
 
 	if f.Verbose {
-		log = ptlog.NewConsoleLog()
+		log = ptlog.NewConsoleLog(zap.AddCallerSkip(1))
 	} else {
 		fmt.Println("log file:", config.Log.Filename())
-		log, err = ptlog.NewLog(config.Log)
+		log, err = ptlog.NewLog(config.Log, zap.AddCallerSkip(1))
 		if err != nil {
 			panic(err)
 		}
 	}
 
+	portal.SetLogger(&logger{log.Logger.Sugar()})
 	log.Infof("start on param %+v", f)
 	log.Infof("config: %+v", config)
 	if len(config.Agent.Name) == 0 {
