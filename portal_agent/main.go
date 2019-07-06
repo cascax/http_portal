@@ -50,10 +50,12 @@ func (h *RequestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.Header().Add(k, v)
 		}
 	}
-	_, err = w.(*portal.HttpResponseWriter).Buf.ReadFrom(resp.Body)
+	writer := w.(*portal.HttpResponseWriter)
+	_, err = writer.Buf.ReadFrom(resp.Body)
 	if err != nil {
 		log.Error("write response error, ", err)
 	}
+	log.Debugf("write resp body len:%d", writer.Buf.Len())
 }
 
 func (h *RequestHandler) getUrl(url url.URL) string {
@@ -126,6 +128,10 @@ func (l *logger) Printf(template string, args ...interface{}) {
 
 func (l *logger) Errorf(template string, args ...interface{}) {
 	l.sugar.Errorf(template, args...)
+}
+
+func (l *logger) Debugf(template string, args ...interface{}) {
+	l.sugar.Debugf(template, args...)
 }
 
 type startFlag struct {

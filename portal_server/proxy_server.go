@@ -146,7 +146,7 @@ func (s *proxyService) GetMsg(header *core.RpcHeader) (proto.Message, error) {
 		return &core.HeartbeatPkg{}, nil
 
 	// 此为响应
-	case "resp_" + core.MethodHttpDo:
+	case core.RespMethodHttpDo:
 		return &core.HttpResponse{}, nil
 
 	default:
@@ -160,7 +160,7 @@ func (s *proxyService) processMsg(header *core.RpcHeader, message proto.Message)
 		return s.Login(message.(*core.LoginRequest))
 	case core.MethodHeartbeat:
 		return s.Heartbeat(message.(*core.HeartbeatPkg))
-	case "resp_" + core.MethodHttpDo:
+	case core.RespMethodHttpDo:
 		return nil, s.SendHttpResponse(header, message.(*core.HttpResponse))
 	default:
 		return nil, errors.Errorf("method(%s) not support", header.Method)
@@ -203,8 +203,7 @@ func (s *proxyService) keepConnection() {
 			log.Error("service call error, ", err)
 			respHeader.Error = err.Error()
 		}
-		// resp为nil时是receive到的响应包
-		if resp == nil {
+		if core.IsRespMethod(header.Method) {
 			continue
 		}
 

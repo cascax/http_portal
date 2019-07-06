@@ -14,11 +14,20 @@ import (
 	"time"
 )
 
-var logger Logger = defaultLogger(0)
+var logger completeLogger = defaultLogger(0)
 
 type Logger interface {
 	Printf(format string, args ...interface{})
 	Errorf(format string, args ...interface{})
+}
+
+type DebugLogger interface {
+	Debugf(format string, args ...interface{})
+}
+
+type completeLogger interface {
+	Logger
+	DebugLogger
 }
 
 type LocalPortal struct {
@@ -65,7 +74,7 @@ func (p *LocalPortal) Run() {
 }
 
 func (p *LocalPortal) connect() error {
-	conn, err := net.Dial("tcp", p.remoteHost)
+	conn, err := net.DialTimeout("tcp", p.remoteHost, 5*time.Second)
 	if err != nil {
 		return errors.WithMessage(err, "dial error")
 	}
@@ -180,7 +189,7 @@ func (p *LocalPortal) heartbeat() (succ bool) {
 				}
 			}
 		} else {
-			logger.Printf("heartbeat ok")
+			logger.Debugf("heartbeat ok")
 		}
 	}
 	return true
@@ -222,9 +231,9 @@ func (p *LocalPortal) getMsg(header *core.RpcHeader) (proto.Message, error) {
 	switch header.Method {
 	case core.MethodHttpDo:
 		return &core.HttpRequest{}, nil
-	case "resp_" + core.MethodLogin:
+	case core.RespMethodLogin:
 		return p.loginGetMsg(header)
-	case "resp_" + core.MethodHeartbeat:
+	case core.RespMethodHeartbeat:
 		return &core.AckResponse{}, nil
 	default:
 		return nil, errors.New("method not support")
@@ -236,9 +245,9 @@ func (p *LocalPortal) processMsg(header *core.RpcHeader, msg proto.Message) erro
 	case core.MethodHttpDo:
 		go p.httpRequest(header, msg.(*core.HttpRequest))
 		return nil
-	case "resp_" + core.MethodLogin:
+	case core.RespMethodLogin:
 		return p.receiver.SendResponse(header.Seq, &core.RpcMessage{Header: header, Msg: msg})
-	case "resp_" + core.MethodHeartbeat:
+	case core.RespMethodHeartbeat:
 		return p.receiver.SendResponse(header.Seq, &core.RpcMessage{Header: header, Msg: msg})
 	default:
 		return errors.New("method not support")
@@ -249,7 +258,7 @@ func (p *LocalPortal) loginGetMsg(header *core.RpcHeader) (proto.Message, error)
 	if len(header.Error) > 0 {
 		return nil, errors.New("login failed, " + header.Error)
 	}
-	if header.Method != "resp_"+core.MethodLogin {
+	if header.Method != core.RespMethodLogin {
 		return nil, errors.New("login resp error")
 	}
 	return &core.AckResponse{}, nil
@@ -265,8 +274,10 @@ func (p *LocalPortal) httpRequest(header *core.RpcHeader, req *core.HttpRequest)
 		p.sendHttpResponse(respHeader, errResp)
 		return
 	}
-	w := newHttpResponseWriter(p.bytesPool.Get().(*bytes.Buffer))
-	defer p.bytesPool.Put(w.Buf)
+	buf := p.bytesPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	w := newHttpResponseWriter(buf)
+	defer p.bytesPool.Put(buf)
 	p.handler.ServeHTTP(w, r)
 	w.mix()
 	p.sendHttpResponse(respHeader, &w.resp)
@@ -370,11 +381,25 @@ func (l defaultLogger) Printf(format string, args ...interface{}) {
 }
 
 func (l defaultLogger) Errorf(format string, args ...interface{}) {
+	fmt.Printf("error: "+format+"\n", args...)
+}
+
+func (l defaultLogger) Debugf(format string, args ...interface{}) {
 	fmt.Printf(format+"\n", args...)
 }
 
+type noDebugLogger struct {
+	Logger
+}
+
+func (l noDebugLogger) Debugf(format string, args ...interface{}) {}
+
 func SetLogger(l Logger) {
 	if l != nil {
-		logger = l
+		if cl, ok := l.(completeLogger); ok {
+			logger = cl
+		} else {
+			logger = noDebugLogger{l}
+		}
 	}
 }

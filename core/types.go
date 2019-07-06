@@ -1,9 +1,15 @@
 package core
 
+import "strings"
+
 const (
-	MethodLogin     = "login"
-	MethodHeartbeat = "heartbeat"
-	MethodHttpDo    = "http_do"
+	RespMethodPrefix    = "resp_"
+	MethodLogin         = "login"
+	MethodHeartbeat     = "heartbeat"
+	MethodHttpDo        = "http_do"
+	RespMethodLogin     = RespMethodPrefix + "login"
+	RespMethodHeartbeat = RespMethodPrefix + "heartbeat"
+	RespMethodHttpDo    = RespMethodPrefix + "http_do"
 
 	PortalHeaderPrefix = "Portal-"
 	PortalHeaderDeep   = PortalHeaderPrefix + "Deep"
@@ -16,4 +22,8 @@ type Temporary interface {
 
 type cause interface {
 	Cause() error
+}
+
+func IsRespMethod(m string) bool {
+	return strings.HasPrefix(m, RespMethodPrefix)
 }

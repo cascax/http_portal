@@ -13,3 +13,6 @@
 
 *.log
 /test
+portal_server
+portal_agent
+test.yml

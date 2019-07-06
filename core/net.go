@@ -232,7 +232,7 @@ func IsClose(err error) bool {
 
 func NewResponseHeader(header *RpcHeader) *RpcHeader {
 	return &RpcHeader{
-		Method: "resp_" + header.Method,
+		Method: RespMethodPrefix + header.Method,
 		Seq:    header.Seq,
 	}
 }

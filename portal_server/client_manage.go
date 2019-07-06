@@ -37,7 +37,7 @@ func (c *PortalManager) Add(client *PortalClient) error {
 	c.mux.Lock()
 	defer c.mux.Unlock()
 	if _, ok := c.clients[client.Name]; ok {
-		return errors.New("client name exists")
+		return errors.Errorf("client name(%s) exists", client.Name)
 	}
 	client.quit = make(chan struct{})
 	c.clients[client.Name] = client
