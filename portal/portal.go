@@ -38,7 +38,6 @@ type LocalPortal struct {
 	sendLock   sync.Mutex
 	receiver   core.MessageReceiver
 	isLogin    bool
-	bytesPool  sync.Pool
 	quit       chan struct{}
 }
 
@@ -48,9 +47,6 @@ func NewLocalPortal(name string, handler http.Handler, remoteHost string) *Local
 		handler:    handler,
 		remoteHost: remoteHost,
 		quit:       make(chan struct{}),
-	}
-	lp.bytesPool.New = func() interface{} {
-		return bytes.NewBuffer(make([]byte, 0, 2048))
 	}
 	return lp
 }
@@ -123,6 +119,7 @@ func (p *LocalPortal) login() error {
 
 func (p *LocalPortal) heartbeatLoop() {
 	t := time.NewTimer(time.Second * 5)
+	failedTime := 0
 	for range t.C {
 		select {
 		case <-p.quit:
@@ -130,25 +127,35 @@ func (p *LocalPortal) heartbeatLoop() {
 			break
 		default:
 		}
-		if p.heartbeat() {
-			t.Reset(time.Second * 5)
+		shortWait, succ := p.heartbeat()
+		if succ {
+			failedTime = 0
 		} else {
+			failedTime++
+		}
+		if failedTime >= 5 {
+			_ = p.conn.Close()
+			failedTime = 0
+		}
+		if shortWait {
 			t.Reset(time.Second * 1)
+		} else {
+			t.Reset(time.Second * 5)
 		}
 	}
 }
 
-func (p *LocalPortal) heartbeat() (succ bool) {
-	succ = true
+func (p *LocalPortal) heartbeat() (shortWait bool, succ bool) {
 	if !p.isLogin {
 		err := p.login()
 		if err != nil {
 			logger.Errorf("re-login error: %s", err)
 		}
-		return
+		return true, false
 	}
 	ctx := context.Background()
 	seq, respCh := p.receiver.PrepareRequest()
+	defer p.receiver.DeleteSeq(seq)
 	respHeader := &core.RpcHeader{
 		Method: core.MethodHeartbeat,
 		Seq:    seq,
@@ -156,7 +163,7 @@ func (p *LocalPortal) heartbeat() (succ bool) {
 	req := &core.HeartbeatPkg{
 		Timestamp: time.Now().Unix(),
 	}
-	tc := context.WithValue(ctx, "lock", p.sendLock)
+	tc := context.WithValue(ctx, "lock", &p.sendLock)
 	tc, _ = context.WithTimeout(ctx, time.Second*5)
 	err := core.Send(tc, p.conn, respHeader, req)
 	if err != nil {
@@ -167,14 +174,16 @@ func (p *LocalPortal) heartbeat() (succ bool) {
 				logger.Errorf("reconnect error, %s", err.Error())
 			}
 			_ = p.login()
-			return false
+			return true, false
 		}
 		logger.Errorf("send heartbeat error, %s", err.Error())
+		return false, false
 	}
 	// receive
 	select {
 	case <-tc.Done():
 		logger.Errorf("heartbeat canceled, %s", tc.Err())
+		return false, false
 	case respPkg := <-respCh:
 		resp := respPkg.Msg.(*core.AckResponse)
 		if resp.Code != core.AckCode_Success {
@@ -185,14 +194,14 @@ func (p *LocalPortal) heartbeat() (succ bool) {
 				err = p.login()
 				if err != nil {
 					logger.Printf("re-login error: %s", err)
-					return
+					return true, false
 				}
 			}
 		} else {
 			logger.Debugf("heartbeat ok")
 		}
 	}
-	return true
+	return false, true
 }
 
 func (p *LocalPortal) receive() {
@@ -264,6 +273,8 @@ func (p *LocalPortal) loginGetMsg(header *core.RpcHeader) (proto.Message, error)
 	return &core.AckResponse{}, nil
 }
 
+// 处理server发来的http请求
+// 解析req后交给http.Handler处理，然后返回结果
 func (p *LocalPortal) httpRequest(header *core.RpcHeader, req *core.HttpRequest) {
 	errResp := &core.HttpResponse{Status: 500}
 	respHeader := core.NewResponseHeader(header)
@@ -274,17 +285,16 @@ func (p *LocalPortal) httpRequest(header *core.RpcHeader, req *core.HttpRequest)
 		p.sendHttpResponse(respHeader, errResp)
 		return
 	}
-	buf := p.bytesPool.Get().(*bytes.Buffer)
-	buf.Reset()
+	buf := core.GetBytesBuf()
+	defer core.PutBytesBuf(buf)
 	w := newHttpResponseWriter(buf)
-	defer p.bytesPool.Put(buf)
 	p.handler.ServeHTTP(w, r)
 	w.mix()
 	p.sendHttpResponse(respHeader, &w.resp)
 }
 
 func (p *LocalPortal) sendHttpResponse(header *core.RpcHeader, resp *core.HttpResponse) {
-	ctx := context.Background()
+	ctx := context.WithValue(context.Background(), "lock", &p.sendLock)
 	err := core.Send(ctx, p.conn, header, resp)
 	if err != nil {
 		logger.Errorf("send http response error, %s", err.Error())

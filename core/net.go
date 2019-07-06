@@ -1,6 +1,7 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"github.com/golang/protobuf/proto"
@@ -14,12 +15,16 @@ import (
 
 const (
 	RpcBeginFlag   uint32 = 0xFFF62556
-	DefaultMsgSize        = 2048
+	DefaultMsgSize        = 1024
+	MaxReceiveSize        = 1024 * 1024 * 50
 )
 
-var beginFlag = make([]byte, 4)
-var bytesPool = sync.Pool{New: func() interface{} {
+var beginFlag = make([]byte, 12)
+var protoBufPool = sync.Pool{New: func() interface{} {
 	return proto.NewBuffer(make([]byte, 0, DefaultMsgSize))
+}}
+var bytesPool = sync.Pool{New: func() interface{} {
+	return bytes.NewBuffer(make([]byte, 0, DefaultMsgSize))
 }}
 
 func Send(ctx context.Context, conn net.Conn, header *RpcHeader, msg proto.Message) error {
@@ -30,26 +35,11 @@ func Send(ctx context.Context, conn net.Conn, header *RpcHeader, msg proto.Messa
 		_ = conn.SetDeadline(d)
 		defer conn.SetDeadline(time.Time{})
 	}
-	// send lock
-	var lock *sync.Mutex
-	if v := ctx.Value("lock"); v != nil {
-		if mu, ok := v.(*sync.Mutex); ok {
-			lock = mu
-			lock.Lock()
-			defer lock.Unlock()
-		}
-	}
-	// send begin flag
-	_, err := conn.Write(beginFlag)
-	if err != nil {
-		return newError(err, "write flag error")
-	}
 
 	// make message data
-	buf := bytesPool.Get().(*proto.Buffer)
-	buf.Reset()
-	defer bytesPool.Put(buf)
-	err = buf.Marshal(header)
+	buf := GetProtoBuf()
+	defer PutProtoBuf(buf)
+	err := buf.Marshal(header)
 	if err != nil {
 		return newError(err, "marshal header error")
 	}
@@ -60,10 +50,28 @@ func Send(ctx context.Context, conn net.Conn, header *RpcHeader, msg proto.Messa
 		}
 	}
 
+	headerBuf := GetBytesBuf()
+	defer PutBytesBuf(headerBuf)
+	// send begin flag
+	_, err = headerBuf.Write(beginFlag)
+	if err != nil {
+		return newError(err, "write flag error")
+	}
+
+	// send lock
+	var lock *sync.Mutex
+	if v := ctx.Value("lock"); v != nil {
+		if mu, ok := v.(*sync.Mutex); ok {
+			lock = mu
+			lock.Lock()
+			defer lock.Unlock()
+		}
+	}
+
 	// send data length, header length and data
-	lenData := make([]byte, 8)
-	binary.BigEndian.PutUint32(lenData, uint32(len(buf.Bytes())))
-	binary.BigEndian.PutUint32(lenData[4:], uint32(header.XXX_Size()))
+	lenData := headerBuf.Bytes()
+	binary.BigEndian.PutUint32(lenData[4:], uint32(len(buf.Bytes())))
+	binary.BigEndian.PutUint32(lenData[8:], uint32(header.XXX_Size()))
 	_, err = conn.Write(lenData)
 	if err != nil {
 		return newError(err, "write len error")
@@ -94,12 +102,14 @@ func Receive(ctx context.Context, conn net.Conn, newMsg func(*RpcHeader) (proto.
 	}
 	bodyLen := binary.BigEndian.Uint32(headerData[4:])
 	headerLen := binary.BigEndian.Uint32(headerData[8:])
+	if bodyLen > MaxReceiveSize {
+		panic(errors.Errorf("body length(0x%x) too big", bodyLen))
+	}
 	if headerLen == 0 {
 		return nil, nil, errors.New("pkg has no header")
 	}
-	buf := bytesPool.Get().(*proto.Buffer)
-	buf.Reset()
-	defer bytesPool.Put(buf)
+	buf := GetProtoBuf()
+	defer PutProtoBuf(buf)
 	if d, ok := ctx.Deadline(); wait && ok {
 		_ = conn.SetDeadline(d)
 		defer conn.SetDeadline(time.Time{})
@@ -256,6 +266,26 @@ func Sleep(tempDelay time.Duration, cancel <-chan struct{}) {
 	case <-cancel:
 		timer.Stop()
 	}
+}
+
+func GetProtoBuf() *proto.Buffer {
+	buf := protoBufPool.Get().(*proto.Buffer)
+	buf.Reset()
+	return buf
+}
+
+func PutProtoBuf(buf *proto.Buffer) {
+	protoBufPool.Put(buf)
+}
+
+func GetBytesBuf() *bytes.Buffer {
+	buf := bytesPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	return buf
+}
+
+func PutBytesBuf(buf *bytes.Buffer) {
+	bytesPool.Put(buf)
 }
 
 func init() {

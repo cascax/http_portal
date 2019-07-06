@@ -59,7 +59,7 @@ func (h *RequestHandler) serveHTTP(w http.ResponseWriter, r *http.Request) error
 	}
 	writer := w.(*portal.HttpResponseWriter)
 	_, err = writer.Buf.ReadFrom(resp.Body)
-	log.Debugf("write resp body len:%d", writer.Buf.Len())
+	log.Debugf("write resp status:%d, body len:%d", resp.StatusCode, writer.Buf.Len())
 	return err
 }
 

@@ -1,9 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"github.com/cascax/http_portal/core"
 	"go.uber.org/zap"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -41,13 +42,15 @@ func (f httpHandler) serveHTTP(w http.ResponseWriter, r *http.Request) error {
 
 	if r.Body != nil {
 		// TODO: 处理不了太大的请求
-		data, err := ioutil.ReadAll(r.Body)
+		buf := core.GetBytesBuf()
+		defer core.PutBytesBuf(buf)
+		err := readAll(buf, r.Body)
 		if err != nil {
 			log.Error("get body error", zap.Error(err), zap.String("remote", r.RemoteAddr))
 			_, err = w.Write([]byte("body error"))
 			return err
 		}
-		req.Body = data
+		req.Body = buf.Bytes()
 	}
 	withDeep := false
 	// check recursive
@@ -93,8 +96,10 @@ func (f httpHandler) serveHTTP(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		if resp != nil {
 			w.WriteHeader(int(resp.Status))
+			log.Errorf("%d for http %s %s, %s", resp.Status, r.Method, r.RequestURI, err)
+		} else {
+			log.Errorf("http %s %s, %s", r.Method, r.RequestURI, err)
 		}
-		log.Errorf("%d for http %s %s, %s", resp.Status, r.Method, r.RequestURI, err)
 		_, err = w.Write([]byte(err.Error()))
 		return err
 	}
@@ -121,4 +126,22 @@ func runHttpServer(server *ProxyServer, host string) {
 			log.Info("http server closed")
 		}
 	}
+}
+
+func readAll(buf *bytes.Buffer, r io.Reader) (err error) {
+	// If the buffer overflows, we will get bytes.ErrTooLarge.
+	// Return that as an error. Any other panic remains.
+	defer func() {
+		e := recover()
+		if e == nil {
+			return
+		}
+		if panicErr, ok := e.(error); ok && panicErr == bytes.ErrTooLarge {
+			err = panicErr
+		} else {
+			panic(e)
+		}
+	}()
+	_, err = buf.ReadFrom(r)
+	return err
 }

@@ -94,6 +94,7 @@ func (s *ProxyServer) DoRequest(req *core.HttpRequest) (*core.HttpResponse, erro
 		return errResp, errors.New("client not found")
 	}
 	seq, respCh := client.PrepareRequest()
+	defer client.DeleteSeq(seq)
 	header := &core.RpcHeader{
 		Method: "http_do",
 		Seq:    seq,
@@ -107,14 +108,13 @@ func (s *ProxyServer) DoRequest(req *core.HttpRequest) (*core.HttpResponse, erro
 		return errResp, errors.New("request error")
 	}
 	// receive
-	defer client.DeleteSeq(seq)
 	select {
 	case <-ctx.Done():
-		logger.Error("do request done", zap.Error(err))
+		logger.Error("do request done", zap.Error(ctx.Err()))
 		return errResp, errors.New("timeout")
 	case resp := <-respCh:
 		if resp.Header.Error != "" {
-			logger.Error("http response has error", zap.Error(err))
+			logger.Error("http response has error", zap.String("error", resp.Header.Error))
 			return errResp, errors.New(resp.Header.Error)
 		}
 		return resp.Msg.(*core.HttpResponse), nil
@@ -196,6 +196,7 @@ func (s *proxyService) keepConnection() {
 			}
 			continue
 		}
+		logger.Debug("receive msg", zap.String("method", header.Method))
 
 		respHeader := core.NewResponseHeader(header)
 		resp, err := s.processMsg(header, msg)
