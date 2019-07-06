@@ -7,7 +7,7 @@ proxy_server:
   port: 10625
   portal:
     mccode:
-      - "local.mccode.info:8080"
+      - "local.mccode.info"
 
 log:
   path: "."

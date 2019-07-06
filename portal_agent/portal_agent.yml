@@ -2,7 +2,7 @@ portal_agent:
   name: mccode
   remote_addr: 127.0.0.1:10625
   host_rewrite:
-    local.mccode.info:8080: local.mccode.info:8081
+    local.mccode.info: local.mccode.info:8081
 
 log:
   path: "."

@@ -41,6 +41,52 @@ portal_agent -c ./portal_agent.yml
 
 ## 🔧 Configuration
 
+An example for the server's config file
+
+```yaml
+http_server:
+  listen: 0.0.0.0
+  port: 8080
+
+proxy_server:
+  listen: 0.0.0.0
+  port: 10625
+  # forward request to the client(mccode) according to the Host
+  portal:
+    mccode:
+      - "local.mccode.info"
+
+# configuration of the log file
+log:
+  path: "."
+  name: server.log
+  # log files' max size (MB)
+  max_size: 100
+  max_backup: 5
+  # valid value: debug info warn error panic fatal
+  level: info
+```
+
+An example for the agent's config file
+
+```yaml
+portal_agent:
+  name: mccode
+  # portal server's address
+  remote_addr: 127.0.0.1:10625
+  # replace the request's host
+  host_rewrite:
+    local.mccode.info: local.mccode.info:8081
+
+# same as above
+log:
+  path: "."
+  name: agent.log
+  max_size: 100
+  max_backup: 5
+  level: info
+```
+
 ## Author
 
 👤 **cascax**
