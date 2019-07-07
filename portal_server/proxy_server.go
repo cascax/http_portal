@@ -17,6 +17,7 @@ type ProxyServer struct {
 	clients  *PortalManager
 	quit     chan struct{}
 	hosts    map[string]string
+	timeout  ProxyTimeoutConfig
 }
 
 func NewProxyServer(host string) *ProxyServer {
@@ -24,6 +25,10 @@ func NewProxyServer(host string) *ProxyServer {
 		host:    host,
 		clients: NewPortalManager(),
 		hosts:   make(map[string]string),
+		timeout: ProxyTimeoutConfig{
+			SendRequest:  60 * time.Second,
+			SendResponse: HeartbeatInterval,
+		},
 	}
 	return s
 }
@@ -34,6 +39,10 @@ func (s *ProxyServer) SetHosts(config map[string][]string) {
 			s.hosts[host] = name
 		}
 	}
+}
+
+func (s *ProxyServer) SetTimeout(t ProxyTimeoutConfig) {
+	s.timeout = t
 }
 
 func (s *ProxyServer) Start() error {
@@ -79,7 +88,7 @@ func (s *ProxyServer) accept() {
 	}
 }
 
-func (s *ProxyServer) DoRequest(req *core.HttpRequest) (*core.HttpResponse, error) {
+func (s *ProxyServer) DoRequest(ctx context.Context, req *core.HttpRequest) (*core.HttpResponse, error) {
 	errResp := &core.HttpResponse{Status: 500}
 	name, ok := s.hosts[req.Host]
 	if !ok {
@@ -99,9 +108,8 @@ func (s *ProxyServer) DoRequest(req *core.HttpRequest) (*core.HttpResponse, erro
 		Method: core.MethodHttpDo,
 		Seq:    seq,
 	}
-	ctx := context.Background()
 	ctx = context.WithValue(ctx, "lock", &client.sendMux)
-	ctx, _ = context.WithTimeout(ctx, 5*time.Second)
+	ctx, _ = context.WithTimeout(ctx, s.timeout.SendRequest)
 	err := core.Send(context.Background(), client.Conn, header, req)
 	if err != nil {
 		logger.Error("send req error", zap.Error(err))
@@ -124,17 +132,19 @@ func (s *ProxyServer) DoRequest(req *core.HttpRequest) (*core.HttpResponse, erro
 func (s *ProxyServer) handleRawConn(conn net.Conn) {
 	// 接受请求
 	service := proxyService{
-		conn:    conn,
-		client:  NewPortalClient(conn),
-		clients: s.clients,
+		conn:        conn,
+		client:      NewPortalClient(conn),
+		clients:     s.clients,
+		sendTimeout: s.timeout.SendResponse,
 	}
 	go service.keepConnection()
 }
 
 type proxyService struct {
-	conn    net.Conn
-	client  *PortalClient
-	clients *PortalManager
+	conn        net.Conn
+	client      *PortalClient
+	clients     *PortalManager
+	sendTimeout time.Duration
 }
 
 func (s *proxyService) GetMsg(header *core.RpcHeader) (proto.Message, error) {
@@ -212,7 +222,7 @@ func (s *proxyService) keepConnection() {
 		go func() {
 			defer wg.Done()
 			tc := context.WithValue(ctx, "lock", &s.client.sendMux)
-			tc, _ = context.WithTimeout(tc, time.Second*10)
+			tc, _ = context.WithTimeout(tc, s.sendTimeout)
 			err = core.Send(tc, s.conn, respHeader, resp)
 			if err != nil {
 				if !core.IsTemporary(err) {

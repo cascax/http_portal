@@ -55,6 +55,7 @@ func main() {
 	log.Infof("config: %+v", config)
 	proxyServer := NewProxyServer(config.ProxyServer.GetHost())
 	proxyServer.SetHosts(config.ProxyServer.Portal)
+	proxyServer.SetTimeout(config.ProxyServer.Timeout)
 	err = proxyServer.Start()
 	if err != nil {
 		log.Panic(err)

@@ -8,6 +8,9 @@ proxy_server:
   portal:
     mccode:
       - "local.mccode.info"
+  timeout:
+    send_request: 10s
+    send_response: 5s
 
 log:
   path: "."

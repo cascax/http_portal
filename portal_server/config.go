@@ -6,6 +6,7 @@ import (
 	"github.com/pkg/errors"
 	"gopkg.in/yaml.v2"
 	"io/ioutil"
+	"time"
 )
 
 const (
@@ -13,20 +14,26 @@ const (
 )
 
 type ServerConfig struct {
-	HttpServer  ProxyConfig `yaml:"http_server"`
-	ProxyServer HttpConfig  `yaml:"proxy_server"`
+	HttpServer  HttpConfig  `yaml:"http_server"`
+	ProxyServer ProxyConfig `yaml:"proxy_server"`
 	Log         ptlog.LogConfig
-}
-
-type ProxyConfig struct {
-	Listen string
-	Port   int
 }
 
 type HttpConfig struct {
 	Listen string
 	Port   int
-	Portal map[string][]string // name => hosts
+}
+
+type ProxyConfig struct {
+	Listen  string
+	Port    int
+	Portal  map[string][]string // name => hosts
+	Timeout ProxyTimeoutConfig
+}
+
+type ProxyTimeoutConfig struct {
+	SendRequest  time.Duration `yaml:"send_request"`
+	SendResponse time.Duration `yaml:"send_response"`
 }
 
 func (c *ProxyConfig) GetHost() string {
@@ -43,14 +50,18 @@ func ReadConfig(filename string) (*ServerConfig, error) {
 		return nil, errors.WithMessage(err, "read config error")
 	}
 	config := &ServerConfig{
-		HttpServer: ProxyConfig{
+		HttpServer: HttpConfig{
 			Listen: "127.0.0.1",
 			Port:   80,
 		},
-		ProxyServer: HttpConfig{
+		ProxyServer: ProxyConfig{
 			Listen: "127.0.0.1",
 			Port:   10625,
 			Portal: make(map[string][]string),
+			Timeout: ProxyTimeoutConfig{
+				10 * time.Second,
+				5 * time.Second,
+			},
 		},
 		Log: ptlog.LogConfig{
 			Path:      ".",

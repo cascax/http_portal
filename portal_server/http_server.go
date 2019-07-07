@@ -92,7 +92,7 @@ func (f httpHandler) serveHTTP(w http.ResponseWriter, r *http.Request) error {
 		Value: []string{r.Host},
 	})
 
-	resp, err := f.proxyServer.DoRequest(req)
+	resp, err := f.proxyServer.DoRequest(r.Context(), req)
 	if err != nil {
 		if resp != nil {
 			w.WriteHeader(int(resp.Status))

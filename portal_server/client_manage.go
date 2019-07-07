@@ -15,7 +15,7 @@ type PortalClient struct {
 	Conn     net.Conn
 	Name     string
 	LastBeat time.Time
-	Online   bool
+	Online   bool // TODO: 暂时未用到
 	quit     chan struct{}
 	sendMux  sync.Mutex
 }
