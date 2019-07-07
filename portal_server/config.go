@@ -32,8 +32,9 @@ type ProxyConfig struct {
 }
 
 type ProxyTimeoutConfig struct {
-	SendRequest  time.Duration `yaml:"send_request"`
-	SendResponse time.Duration `yaml:"send_response"`
+	SendRequest     time.Duration `yaml:"send_request"`
+	ReceiveResponse time.Duration `yaml:"receive_response"`
+	SendResponse    time.Duration `yaml:"send_response"`
 }
 
 func (c *ProxyConfig) GetHost() string {
@@ -60,6 +61,7 @@ func ReadConfig(filename string) (*ServerConfig, error) {
 			Portal: make(map[string][]string),
 			Timeout: ProxyTimeoutConfig{
 				10 * time.Second,
+				60 * time.Second,
 				5 * time.Second,
 			},
 		},

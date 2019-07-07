@@ -7,11 +7,17 @@ import (
 	"github.com/golang/protobuf/proto"
 	"github.com/pkg/errors"
 	"golang.org/x/net/context"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"sync"
 	"time"
+)
+
+const (
+	ResponseSizeLimit = 1024 * 1024 * 4
+	ResponseReadSize  = 512
 )
 
 var logger completeLogger = defaultLogger(0)
@@ -291,30 +297,37 @@ func (p *LocalPortal) loginGetMsg(header *core.RpcHeader) (proto.Message, error)
 func (p *LocalPortal) httpRequest(header *core.RpcHeader, req *core.HttpRequest) {
 	errResp := &core.HttpResponse{Status: 500}
 	respHeader := core.NewResponseHeader(header)
-	r, err := parseHttpRequest(req)
+	r, err := parseHttpRequest(context.Background(), req)
 	if err != nil {
 		logger.Errorf("parse http request error, %s", err.Error())
 		respHeader.Error = err.Error()
-		p.sendHttpResponse(respHeader, errResp)
+		_ = p.sendHttpResponse(respHeader, errResp)
 		return
 	}
 	buf := core.GetBytesBuf()
-	defer core.PutBytesBuf(buf)
-	w := newHttpResponseWriter(buf)
+	w := newHttpResponseWriter(buf.Bytes(), func(resp *core.HttpResponse) error {
+		return p.sendHttpResponse(respHeader, resp)
+	})
+	defer core.PutBytesBuf(bytes.NewBuffer(w.buf))
 	p.handler.ServeHTTP(w, r)
-	w.mix()
-	p.sendHttpResponse(respHeader, &w.resp)
+	err = w.Send(true)
+	if err != nil {
+		logger.Errorf("send the end resp error, %s", err.Error())
+	}
 }
 
-func (p *LocalPortal) sendHttpResponse(header *core.RpcHeader, resp *core.HttpResponse) {
+func (p *LocalPortal) sendHttpResponse(header *core.RpcHeader, resp *core.HttpResponse) error {
 	ctx := context.WithValue(context.Background(), "lock", &p.sendLock)
 	err := core.Send(ctx, p.conn, header, resp)
 	if err != nil {
 		logger.Errorf("send http response error, %s", err.Error())
+		return err
 	}
+	logger.Debugf("send http response, seq:%d len:%d", header.Seq, len(resp.Body))
+	return nil
 }
 
-func parseHttpRequest(req *core.HttpRequest) (*http.Request, error) {
+func parseHttpRequest(ctx context.Context, req *core.HttpRequest) (*http.Request, error) {
 	r := &http.Request{
 		Method:     req.Method,
 		Proto:      req.ReqProto,
@@ -340,13 +353,17 @@ func parseHttpRequest(req *core.HttpRequest) (*http.Request, error) {
 	if r.URL, err = url.ParseRequestURI(rawurl); err != nil {
 		return nil, errors.WithMessage(err, "parse uri error")
 	}
+	r.WithContext(ctx)
 	return r, nil
 }
 
 type HttpResponseWriter struct {
-	resp   core.HttpResponse
-	header http.Header
-	Buf    *bytes.Buffer
+	firstResp core.HttpResponse
+	header    http.Header
+	buf       []byte
+	bufLen    int
+	firstSend bool
+	sendFunc  func(*core.HttpResponse) error
 }
 
 func (w *HttpResponseWriter) Header() http.Header {
@@ -354,28 +371,112 @@ func (w *HttpResponseWriter) Header() http.Header {
 }
 
 func (w *HttpResponseWriter) Write(data []byte) (int, error) {
-	return w.Buf.Write(data)
+	l := len(data)
+	e := w.growBuf(l)
+	if e != nil {
+		return 0, e
+	}
+	copy(w.buf[w.bufLen:], data)
+	w.bufLen += l
+	if w.bufLen >= ResponseSizeLimit {
+		e := w.Send(false)
+		if e != nil {
+			return l, e
+		}
+	}
+	return l, nil
 }
 
 func (w *HttpResponseWriter) WriteHeader(statusCode int) {
-	w.resp.Status = int32(statusCode)
+	w.firstResp.Status = int32(statusCode)
+}
+
+func (w *HttpResponseWriter) ReadFrom(reader io.Reader) (int, error) {
+	hasRead := 0
+	hasSend := w.bufLen
+	for {
+		e := w.growBuf(ResponseReadSize)
+		if e != nil {
+			return hasRead, e
+		}
+		end := cap(w.buf)
+		if end > ResponseSizeLimit {
+			end = ResponseSizeLimit
+		}
+		n, e := reader.Read(w.buf[w.bufLen:end])
+		if n < 0 {
+			panic(errors.New("bytes.Buffer: reader returned negative count from Read"))
+		}
+		w.bufLen += n
+		hasRead += n
+		hasSend += n
+		if e != nil {
+			if e == io.EOF {
+				return hasRead, nil
+			}
+			return hasRead, e
+		}
+		if hasSend >= ResponseSizeLimit {
+			e = w.Send(false)
+			if e != nil {
+				return hasRead, e
+			}
+			hasSend = 0
+		}
+	}
+}
+
+func (w *HttpResponseWriter) Send(finish bool) error {
+	var resp *core.HttpResponse
+	if w.firstSend {
+		w.mix()
+		w.firstSend = false
+		resp = &w.firstResp
+	} else {
+		resp = &core.HttpResponse{
+			Body: w.buf[:w.bufLen],
+		}
+	}
+	resp.NotFinish = !finish
+	err := w.sendFunc(resp)
+	if err != nil {
+		return errors.WithMessage(err, "send resp error")
+	}
+	w.bufLen = 0
+	return nil
 }
 
 func (w *HttpResponseWriter) mix() {
 	for k, arr := range w.header {
-		w.resp.Header = append(w.resp.Header, &core.HttpRequest_Header{
+		w.firstResp.Header = append(w.firstResp.Header, &core.HttpRequest_Header{
 			Key: k, Value: arr,
 		})
 	}
-	w.resp.Body = w.Buf.Bytes()
+	w.firstResp.Body = w.buf[:w.bufLen]
 }
 
-func newHttpResponseWriter(buf *bytes.Buffer) *HttpResponseWriter {
-	w := &HttpResponseWriter{
-		header: make(http.Header),
-		Buf:    buf,
+func (w *HttpResponseWriter) growBuf(n int) error {
+	c := cap(w.buf)
+	if w.bufLen+n < c {
+		return nil
 	}
-	w.resp.Status = 200
+	if c+n > core.MaxReceiveSize {
+		return bytes.ErrTooLarge
+	}
+	buf := make([]byte, 2*c+n)
+	copy(buf, w.buf[:w.bufLen])
+	w.buf = buf
+	return nil
+}
+
+func newHttpResponseWriter(buf []byte, sendFunc func(*core.HttpResponse) error) *HttpResponseWriter {
+	w := &HttpResponseWriter{
+		header:    make(http.Header),
+		buf:       buf,
+		firstSend: true,
+		sendFunc:  sendFunc,
+	}
+	w.firstResp.Status = 200
 	return w
 }
 

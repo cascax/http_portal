@@ -7,6 +7,7 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/net/context"
 	"net"
+	"net/http"
 	"sync"
 	"time"
 )
@@ -26,8 +27,9 @@ func NewProxyServer(host string) *ProxyServer {
 		clients: NewPortalManager(),
 		hosts:   make(map[string]string),
 		timeout: ProxyTimeoutConfig{
-			SendRequest:  60 * time.Second,
-			SendResponse: HeartbeatInterval,
+			SendRequest:     60 * time.Second,
+			ReceiveResponse: 60 * time.Second,
+			SendResponse:    HeartbeatInterval,
 		},
 	}
 	return s
@@ -88,19 +90,16 @@ func (s *ProxyServer) accept() {
 	}
 }
 
-func (s *ProxyServer) DoRequest(ctx context.Context, req *core.HttpRequest) (*core.HttpResponse, error) {
-	errResp := &core.HttpResponse{Status: 500}
+func (s *ProxyServer) DoRequest(ctx context.Context, req *core.HttpRequest, w http.ResponseWriter) (status int, err error) {
 	name, ok := s.hosts[req.Host]
 	if !ok {
-		errResp.Status = 404
 		logger.Error("host not found", zap.String("host", req.Host))
-		return errResp, errors.New("not found")
+		return 404, errors.New("not found")
 	}
 	client := s.clients.Get(name)
 	if client == nil {
-		errResp.Status = 404
 		logger.Error("client not found", zap.String("name", name))
-		return errResp, errors.New("client not found")
+		return 404, errors.New("client not found")
 	}
 	seq, respCh := client.PrepareRequest()
 	defer client.DeleteSeq(seq)
@@ -108,24 +107,50 @@ func (s *ProxyServer) DoRequest(ctx context.Context, req *core.HttpRequest) (*co
 		Method: core.MethodHttpDo,
 		Seq:    seq,
 	}
-	ctx = context.WithValue(ctx, "lock", &client.sendMux)
-	ctx, _ = context.WithTimeout(ctx, s.timeout.SendRequest)
-	err := core.Send(context.Background(), client.Conn, header, req)
+	sendCtx := context.WithValue(ctx, "lock", &client.sendMux)
+	sendCtx, _ = context.WithTimeout(sendCtx, s.timeout.SendRequest)
+	err = core.Send(sendCtx, client.Conn, header, req)
 	if err != nil {
 		logger.Error("send req error", zap.Error(err))
-		return errResp, errors.New("request error")
+		return 500, errors.New("request error")
 	}
+	logger.Debug("send msg", zap.String("method", header.Method), zap.Int32("seq", seq))
 	// receive
-	select {
-	case <-ctx.Done():
-		logger.Error("do request done", zap.Error(ctx.Err()))
-		return errResp, errors.New("timeout")
-	case resp := <-respCh:
-		if resp.Header.Error != "" {
-			logger.Error("http response has error", zap.String("error", resp.Header.Error))
-			return errResp, errors.New(resp.Header.Error)
+	firstReceive := true
+	for {
+		rcvCtx, _ := context.WithTimeout(ctx, s.timeout.ReceiveResponse)
+		select {
+		case <-rcvCtx.Done():
+			logger.Error("DoRequest.receive done", zap.Error(ctx.Err()))
+			return 500, nil
+		case resp := <-respCh:
+			if resp.Header.Error != "" {
+				logger.Error("http response has error", zap.String("error", resp.Header.Error))
+				return 500, errors.New(resp.Header.Error)
+			}
+			httpResp := resp.Msg.(*core.HttpResponse)
+			log.Debugf("receive body len: %d (seq %d)", len(httpResp.Body), seq)
+			if firstReceive {
+				header := w.Header()
+				for _, h := range httpResp.Header {
+					for _, v := range h.Value {
+						header.Add(h.Key, v)
+					}
+				}
+				w.WriteHeader(int(httpResp.Status))
+				firstReceive = false
+			}
+			if len(httpResp.Body) > 0 {
+				_, err = w.Write(httpResp.Body)
+				if err != nil {
+					logger.Error("write response error", zap.Error(err))
+					return 500, nil
+				}
+			}
+			if !httpResp.NotFinish {
+				return 200, nil
+			}
 		}
-		return resp.Msg.(*core.HttpResponse), nil
 	}
 }
 
@@ -206,7 +231,7 @@ func (s *proxyService) keepConnection() {
 			}
 			continue
 		}
-		logger.Debug("receive msg", zap.String("method", header.Method))
+		logger.Debug("receive msg", zap.String("method", header.Method), zap.Int32("seq", header.Seq))
 
 		respHeader := core.NewResponseHeader(header)
 		resp, err := s.processMsg(header, msg)
@@ -262,7 +287,7 @@ func (s *proxyService) SendHttpResponse(header *core.RpcHeader, resp *core.HttpR
 	err := s.client.SendResponse(header.Seq, &core.RpcMessage{Header: header, Msg: resp})
 	if err != nil {
 		logger.Error("client send resp error", zap.String("name", s.client.Name),
-			zap.Error(err))
+			zap.Int32("seq", header.Seq), zap.Error(err))
 		return err
 	}
 	return nil

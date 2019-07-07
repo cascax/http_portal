@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"github.com/cascax/http_portal/core"
 	"github.com/cascax/http_portal/portal"
 	"github.com/cascax/http_portal/ptlog"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -30,7 +32,7 @@ func (h *RequestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (h *RequestHandler) serveHTTP(w http.ResponseWriter, r *http.Request) error {
 	log.Infof("%s %s", r.Method, r.URL.String())
 	newUrl := h.getUrl(*r.URL)
-	req, err := http.NewRequest(r.Method, newUrl, r.Body)
+	req, err := http.NewRequest(r.Method, newUrl.String(), r.Body)
 	if err != nil {
 		log.Error("make request error, ", err)
 		w.WriteHeader(500)
@@ -43,7 +45,12 @@ func (h *RequestHandler) serveHTTP(w http.ResponseWriter, r *http.Request) error
 			req.Header.Add(k, v)
 		}
 	}
-	client := &http.Client{Timeout: h.httpTimeout}
+	client := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+		Timeout: h.httpTimeout,
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		log.Error("do request error, ", err)
@@ -51,24 +58,29 @@ func (h *RequestHandler) serveHTTP(w http.ResponseWriter, r *http.Request) error
 		_, err = w.Write([]byte(err.Error()))
 		return err
 	}
-	w.WriteHeader(resp.StatusCode)
+	// replace redirect header
+	if v := resp.Header.Get("Location"); len(v) > 0 {
+		resp.Header.Set("Location", strings.Replace(v, newUrl.Host, r.Header.Get(core.PortalHeaderHost), 1))
+	}
+
 	for k, arr := range resp.Header {
 		for _, v := range arr {
 			w.Header().Add(k, v)
 		}
 	}
-	log.Debugf("http response length:%d", resp.ContentLength)
+	w.WriteHeader(resp.StatusCode)
+	log.Debugf("http response status:%d length:%d", resp.StatusCode, resp.ContentLength)
+
 	writer := w.(*portal.HttpResponseWriter)
-	_, err = writer.Buf.ReadFrom(resp.Body)
-	log.Debugf("write resp status:%d, body len:%d", resp.StatusCode, writer.Buf.Len())
+	_, err = writer.ReadFrom(resp.Body)
 	return err
 }
 
-func (h *RequestHandler) getUrl(url url.URL) string {
+func (h *RequestHandler) getUrl(url url.URL) url.URL {
 	if v, ok := h.hostRewrite[url.Host]; ok {
 		url.Host = v
 	}
-	return url.String()
+	return url
 }
 
 func defaultConfig() string {

@@ -23,6 +23,7 @@ message HttpResponse {
     int32 status = 1;
     repeated HttpRequest.Header header = 2;
     bytes body = 3;
+    bool not_finish = 4;
 }
 
 message LoginRequest {

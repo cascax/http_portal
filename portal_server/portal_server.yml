@@ -10,6 +10,7 @@ proxy_server:
       - "local.mccode.info"
   timeout:
     send_request: 10s
+    receive_response: 60s
     send_response: 5s
 
 log:

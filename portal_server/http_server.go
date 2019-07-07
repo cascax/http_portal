@@ -46,6 +46,7 @@ func (f httpHandler) serveHTTP(w http.ResponseWriter, r *http.Request) error {
 		defer core.PutBytesBuf(buf)
 		err := readAll(buf, r.Body)
 		if err != nil {
+			w.WriteHeader(500)
 			log.Error("get body error", zap.Error(err), zap.String("remote", r.RemoteAddr))
 			_, err = w.Write([]byte("body error"))
 			return err
@@ -92,27 +93,14 @@ func (f httpHandler) serveHTTP(w http.ResponseWriter, r *http.Request) error {
 		Value: []string{r.Host},
 	})
 
-	resp, err := f.proxyServer.DoRequest(r.Context(), req)
+	status, err := f.proxyServer.DoRequest(r.Context(), req, w)
 	if err != nil {
-		if resp != nil {
-			w.WriteHeader(int(resp.Status))
-			log.Errorf("%d for http %s %s, %s", resp.Status, r.Method, r.RequestURI, err)
-		} else {
-			log.Errorf("http %s %s, %s", r.Method, r.RequestURI, err)
-		}
+		w.WriteHeader(status)
+		log.Errorf("%d for http %s %s, %s", status, r.Method, r.RequestURI, err)
 		_, err = w.Write([]byte(err.Error()))
 		return err
 	}
-	log.Debugf("receive body len: %d", len(resp.Body))
-	header := w.Header()
-	for _, h := range resp.Header {
-		for _, v := range h.Value {
-			header.Add(h.Key, v)
-		}
-	}
-	w.WriteHeader(int(resp.Status))
-	_, err = w.Write(resp.Body)
-	return err
+	return nil
 }
 
 func runHttpServer(server *ProxyServer, host string) {
