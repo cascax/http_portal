@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"github.com/cascax/http_portal/portal"
 	"github.com/cascax/http_portal/ptlog"
-	"go.uber.org/zap"
 	"net/http"
 	"net/url"
 	"os"
@@ -18,6 +17,7 @@ var log *ptlog.ZapLogger
 
 type RequestHandler struct {
 	hostRewrite map[string]string
+	httpTimeout time.Duration
 }
 
 func (h *RequestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -43,7 +43,7 @@ func (h *RequestHandler) serveHTTP(w http.ResponseWriter, r *http.Request) error
 			req.Header.Add(k, v)
 		}
 	}
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := &http.Client{Timeout: h.httpTimeout}
 	resp, err := client.Do(req)
 	if err != nil {
 		log.Error("do request error, ", err)
@@ -57,6 +57,7 @@ func (h *RequestHandler) serveHTTP(w http.ResponseWriter, r *http.Request) error
 			w.Header().Add(k, v)
 		}
 	}
+	log.Debugf("http response length:%d", resp.ContentLength)
 	writer := w.(*portal.HttpResponseWriter)
 	_, err = writer.Buf.ReadFrom(resp.Body)
 	log.Debugf("write resp status:%d, body len:%d", resp.StatusCode, writer.Buf.Len())
@@ -91,16 +92,16 @@ func main() {
 	}
 
 	if f.Verbose {
-		log = ptlog.NewConsoleLog(zap.AddCallerSkip(1))
+		log = ptlog.NewConsoleLog()
 	} else {
 		fmt.Println("log file:", config.Log.Filename())
-		log, err = ptlog.NewLog(config.Log, zap.AddCallerSkip(1))
+		log, err = ptlog.NewLog(config.Log)
 		if err != nil {
 			panic(err)
 		}
 	}
 
-	portal.SetLogger(&logger{log.Logger.Sugar()})
+	portal.SetLogger(log)
 	log.Infof("start on param %+v", f)
 	log.Infof("config: %+v", config)
 	if len(config.Agent.Name) == 0 {
@@ -112,27 +113,14 @@ func main() {
 
 	handler := &RequestHandler{
 		hostRewrite: make(map[string]string),
+		httpTimeout: config.Agent.Timeout.HTTPRead,
 	}
 	for k, v := range config.Agent.HostRewrite {
 		handler.hostRewrite[k] = v
 	}
-	portal.NewLocalPortal(config.Agent.Name, handler, config.Agent.RemoteAddr).Run()
-}
-
-type logger struct {
-	sugar *zap.SugaredLogger
-}
-
-func (l *logger) Printf(template string, args ...interface{}) {
-	l.sugar.Infof(template, args...)
-}
-
-func (l *logger) Errorf(template string, args ...interface{}) {
-	l.sugar.Errorf(template, args...)
-}
-
-func (l *logger) Debugf(template string, args ...interface{}) {
-	l.sugar.Debugf(template, args...)
+	s := portal.NewLocalPortal(config.Agent.Name, handler, config.Agent.RemoteAddr)
+	s.SetTimeout(config.Agent.Timeout)
+	s.Run()
 }
 
 type startFlag struct {

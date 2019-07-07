@@ -96,7 +96,7 @@ func (s *ProxyServer) DoRequest(req *core.HttpRequest) (*core.HttpResponse, erro
 	seq, respCh := client.PrepareRequest()
 	defer client.DeleteSeq(seq)
 	header := &core.RpcHeader{
-		Method: "http_do",
+		Method: core.MethodHttpDo,
 		Seq:    seq,
 	}
 	ctx := context.Background()

@@ -3,13 +3,13 @@ package core
 import "strings"
 
 const (
-	RespMethodPrefix    = "resp_"
+	RespMethodPrefix    = "RESP_"
 	MethodLogin         = "login"
-	MethodHeartbeat     = "heartbeat"
-	MethodHttpDo        = "http_do"
-	RespMethodLogin     = RespMethodPrefix + "login"
-	RespMethodHeartbeat = RespMethodPrefix + "heartbeat"
-	RespMethodHttpDo    = RespMethodPrefix + "http_do"
+	MethodHeartbeat     = "hb"
+	MethodHttpDo        = "http"
+	RespMethodLogin     = RespMethodPrefix + MethodLogin
+	RespMethodHeartbeat = RespMethodPrefix + MethodHeartbeat
+	RespMethodHttpDo    = RespMethodPrefix + MethodHttpDo
 
 	PortalHeaderPrefix = "Portal-"
 	PortalHeaderDeep   = PortalHeaderPrefix + "Deep"

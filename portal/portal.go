@@ -17,7 +17,7 @@ import (
 var logger completeLogger = defaultLogger(0)
 
 type Logger interface {
-	Printf(format string, args ...interface{})
+	Infof(format string, args ...interface{})
 	Errorf(format string, args ...interface{})
 }
 
@@ -30,6 +30,12 @@ type completeLogger interface {
 	DebugLogger
 }
 
+type TimeoutConfig struct {
+	ServerConnect time.Duration `yaml:"server_connect"`
+	ServerWrite   time.Duration `yaml:"server_write"`
+	HTTPRead      time.Duration `yaml:"http_read"`
+}
+
 type LocalPortal struct {
 	name       string
 	handler    http.Handler
@@ -39,6 +45,7 @@ type LocalPortal struct {
 	receiver   core.MessageReceiver
 	isLogin    bool
 	quit       chan struct{}
+	timeout    TimeoutConfig
 }
 
 func NewLocalPortal(name string, handler http.Handler, remoteHost string) *LocalPortal {
@@ -47,8 +54,16 @@ func NewLocalPortal(name string, handler http.Handler, remoteHost string) *Local
 		handler:    handler,
 		remoteHost: remoteHost,
 		quit:       make(chan struct{}),
+		timeout: TimeoutConfig{
+			ServerConnect: 5 * time.Second,
+			ServerWrite:   5 * time.Second,
+		},
 	}
 	return lp
+}
+
+func (p *LocalPortal) SetTimeout(t TimeoutConfig) {
+	p.timeout = t
 }
 
 func (p *LocalPortal) Start() {
@@ -70,12 +85,12 @@ func (p *LocalPortal) Run() {
 }
 
 func (p *LocalPortal) connect() error {
-	conn, err := net.DialTimeout("tcp", p.remoteHost, 5*time.Second)
+	conn, err := net.DialTimeout("tcp", p.remoteHost, p.timeout.ServerConnect)
 	if err != nil {
 		return errors.WithMessage(err, "dial error")
 	}
 	p.conn = conn
-	logger.Printf("connect server %s", p.remoteHost)
+	logger.Infof("connect server %s", p.remoteHost)
 	go p.receive()
 	return nil
 }
@@ -90,7 +105,7 @@ func (p *LocalPortal) login() error {
 	req := &core.LoginRequest{
 		Name: p.name,
 	}
-	ctx, _ := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, _ := context.WithTimeout(context.Background(), p.timeout.ServerWrite)
 	ctx = context.WithValue(ctx, "lock", &p.sendLock)
 	err := core.Send(ctx, p.conn, header, req)
 	if err != nil {
@@ -110,7 +125,7 @@ func (p *LocalPortal) login() error {
 		if resp.Code != core.AckCode_Success {
 			return errors.Errorf("login failed, code:%d", resp.Code)
 		} else {
-			logger.Printf("login success")
+			logger.Infof("login success")
 		}
 	}
 	p.isLogin = true
@@ -164,7 +179,7 @@ func (p *LocalPortal) heartbeat() (shortWait bool, succ bool) {
 		Timestamp: time.Now().Unix(),
 	}
 	tc := context.WithValue(ctx, "lock", &p.sendLock)
-	tc, _ = context.WithTimeout(ctx, time.Second*5)
+	tc, _ = context.WithTimeout(ctx, p.timeout.ServerWrite)
 	err := core.Send(tc, p.conn, respHeader, req)
 	if err != nil {
 		if !core.IsTemporary(err) {
@@ -193,7 +208,7 @@ func (p *LocalPortal) heartbeat() (shortWait bool, succ bool) {
 				p.isLogin = false
 				err = p.login()
 				if err != nil {
-					logger.Printf("re-login error: %s", err)
+					logger.Infof("re-login error: %s", err)
 					return true, false
 				}
 			}
@@ -226,8 +241,6 @@ func (p *LocalPortal) receive() {
 		}
 
 		respHeader := &core.RpcHeader{}
-		tc := context.WithValue(ctx, "lock", p.sendLock)
-		tc, _ = context.WithTimeout(tc, time.Second*10)
 		err = p.processMsg(header, msg)
 		if err != nil {
 			logger.Errorf("service deal msg error, %s", err)
@@ -245,7 +258,7 @@ func (p *LocalPortal) getMsg(header *core.RpcHeader) (proto.Message, error) {
 	case core.RespMethodHeartbeat:
 		return &core.AckResponse{}, nil
 	default:
-		return nil, errors.New("method not support")
+		return nil, errors.Errorf("method(%s) not support", header.Method)
 	}
 }
 
@@ -386,7 +399,7 @@ func newBodyReader(data []byte) *BodyReader {
 
 type defaultLogger int
 
-func (l defaultLogger) Printf(format string, args ...interface{}) {
+func (l defaultLogger) Infof(format string, args ...interface{}) {
 	fmt.Printf(format+"\n", args...)
 }
 

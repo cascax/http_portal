@@ -1,10 +1,12 @@
 package main
 
 import (
+	"github.com/cascax/http_portal/portal"
 	"github.com/cascax/http_portal/ptlog"
 	"github.com/pkg/errors"
 	"gopkg.in/yaml.v2"
 	"io/ioutil"
+	"time"
 )
 
 const (
@@ -17,9 +19,10 @@ type ServerConfig struct {
 }
 
 type AgentConfig struct {
-	RemoteAddr  string            `yaml:"remote_addr"`
-	Name        string            `yaml:"name"`
-	HostRewrite map[string]string `yaml:"host_rewrite"`
+	RemoteAddr  string               `yaml:"remote_addr"`
+	Name        string               `yaml:"name"`
+	HostRewrite map[string]string    `yaml:"host_rewrite"`
+	Timeout     portal.TimeoutConfig `yaml:"timeout"`
 }
 
 func ReadConfig(filename string) (*ServerConfig, error) {
@@ -30,6 +33,10 @@ func ReadConfig(filename string) (*ServerConfig, error) {
 	config := &ServerConfig{
 		Agent: AgentConfig{
 			HostRewrite: make(map[string]string),
+			Timeout: portal.TimeoutConfig{
+				ServerConnect: 5 * time.Second,
+				ServerWrite:   5 * time.Second,
+			},
 		},
 		Log: ptlog.LogConfig{
 			Path:      ".",

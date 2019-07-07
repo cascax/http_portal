@@ -3,6 +3,10 @@ portal_agent:
   remote_addr: 127.0.0.1:10625
   host_rewrite:
     local.mccode.info: local.mccode.info:8081
+  timeout:
+    server_connect: 5s
+    server_write: 5s
+    http_read: 0s
 
 log:
   path: "."
