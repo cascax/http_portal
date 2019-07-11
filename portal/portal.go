@@ -16,8 +16,9 @@ import (
 )
 
 const (
-	ResponseSizeLimit = 1024 * 1024 * 4
-	ResponseReadSize  = 512
+	ResponseSizeLimit        = 1024 * 1024 * 4
+	ResponseReadSize         = 512
+	DefaultHeartbeatInterval = 5 * time.Second
 )
 
 var logger completeLogger = defaultLogger(0)
@@ -43,15 +44,16 @@ type TimeoutConfig struct {
 }
 
 type LocalPortal struct {
-	name       string
-	handler    http.Handler
-	remoteHost string
-	conn       net.Conn
-	sendLock   sync.Mutex
-	receiver   core.MessageReceiver
-	isLogin    bool
-	quit       chan struct{}
-	timeout    TimeoutConfig
+	name         string
+	handler      http.Handler
+	remoteHost   string
+	conn         net.Conn
+	sendLock     sync.Mutex
+	receiver     core.MessageReceiver
+	isLogin      bool
+	quit         chan struct{}
+	timeout      TimeoutConfig
+	lastTransfer time.Time
 }
 
 func NewLocalPortal(name string, handler http.Handler, remoteHost string) *LocalPortal {
@@ -148,9 +150,15 @@ func (p *LocalPortal) heartbeatLoop() {
 			break
 		default:
 		}
+		now := time.Now()
+		if now.Sub(p.lastTransfer) < DefaultHeartbeatInterval {
+			t.Reset(now.Sub(p.lastTransfer))
+			continue
+		}
 		shortWait, succ := p.heartbeat()
 		if succ {
 			failedTime = 0
+			p.lastTransfer = time.Now()
 		} else {
 			failedTime++
 		}
@@ -161,7 +169,7 @@ func (p *LocalPortal) heartbeatLoop() {
 		if shortWait {
 			t.Reset(time.Second * 1)
 		} else {
-			t.Reset(time.Second * 5)
+			t.Reset(DefaultHeartbeatInterval)
 		}
 	}
 }
@@ -313,6 +321,8 @@ func (p *LocalPortal) httpRequest(header *core.RpcHeader, req *core.HttpRequest)
 	err = w.Send(true)
 	if err != nil {
 		logger.Errorf("send the end resp error, %s", err.Error())
+	} else {
+		p.lastTransfer = time.Now()
 	}
 }
 

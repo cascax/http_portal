@@ -121,7 +121,7 @@ func (s *ProxyServer) DoRequest(ctx context.Context, req *core.HttpRequest, w ht
 		rcvCtx, _ := context.WithTimeout(ctx, s.timeout.ReceiveResponse)
 		select {
 		case <-rcvCtx.Done():
-			logger.Error("DoRequest.receive done", zap.Error(ctx.Err()))
+			logger.Error("DoRequest.receive done", zap.Error(rcvCtx.Err()))
 			return 500, nil
 		case resp := <-respCh:
 			if resp.Header.Error != "" {
@@ -148,8 +148,10 @@ func (s *ProxyServer) DoRequest(ctx context.Context, req *core.HttpRequest, w ht
 				}
 			}
 			if !httpResp.NotFinish {
+				client.Beat()
 				return 200, nil
 			}
+			client.Beat()
 		}
 	}
 }

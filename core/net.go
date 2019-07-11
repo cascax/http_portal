@@ -98,7 +98,7 @@ func Receive(ctx context.Context, conn net.Conn, newMsg func(*RpcHeader) (proto.
 		return nil, nil, newError(err, "read header error")
 	}
 	if binary.BigEndian.Uint32(headerData[0:]) != RpcBeginFlag {
-		return nil, nil, errors.New("begin flag wrong")
+		return nil, nil, &NetError{msg: "begin flag wrong", temporary: false}
 	}
 	bodyLen := binary.BigEndian.Uint32(headerData[4:])
 	headerLen := binary.BigEndian.Uint32(headerData[8:])
@@ -200,8 +200,14 @@ type NetError struct {
 	temporary bool
 }
 
-func (w *NetError) Error() string { return w.msg + ": " + w.cause.Error() }
-func (w *NetError) Cause() error  { return w.cause }
+func (w *NetError) Error() string {
+	if w.cause != nil {
+		return w.msg + ": " + w.cause.Error()
+	} else {
+		return w.msg
+	}
+}
+func (w *NetError) Cause() error { return w.cause }
 func (w *NetError) Temporary() bool {
 	return w.temporary
 }
