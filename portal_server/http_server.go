@@ -26,7 +26,7 @@ func (f httpHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (f httpHandler) serveHTTP(w http.ResponseWriter, r *http.Request) error {
-	log.Infof("http %s %s", r.Method, r.RequestURI)
+	log.Infof("http %s %s%s", r.Method, r.Host, r.URL.Path)
 
 	req := &core.HttpRequest{
 		Method:     r.Method,

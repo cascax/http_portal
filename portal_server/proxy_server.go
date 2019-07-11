@@ -99,17 +99,18 @@ func (s *ProxyServer) DoRequest(ctx context.Context, req *core.HttpRequest, w ht
 	client := s.clients.Get(name)
 	if client == nil {
 		logger.Error("client not found", zap.String("name", name))
+		log.Debugf("client len: %d", s.clients.ClientNum())
 		return 404, errors.New("client not found")
 	}
+	// 准备请求客户端，生成请求序列号以及响应返回channel
 	seq, respCh := client.PrepareRequest()
 	defer client.DeleteSeq(seq)
 	header := &core.RpcHeader{
 		Method: core.MethodHttpDo,
 		Seq:    seq,
 	}
-	sendCtx := context.WithValue(ctx, "lock", &client.sendMux)
-	sendCtx, _ = context.WithTimeout(sendCtx, s.timeout.SendRequest)
-	err = core.Send(sendCtx, client.Conn, header, req)
+	sendCtx, _ := context.WithTimeout(ctx, s.timeout.SendRequest)
+	err = client.Send(sendCtx, header, req)
 	if err != nil {
 		logger.Error("send req error", zap.Error(err))
 		return 500, errors.New("request error")
@@ -137,9 +138,11 @@ func (s *ProxyServer) DoRequest(ctx context.Context, req *core.HttpRequest, w ht
 						header.Add(h.Key, v)
 					}
 				}
+				// 先把头写出去 后面的body可能会很大
 				w.WriteHeader(int(httpResp.Status))
 				firstReceive = false
 			}
+			// Body没有的情况一般是最后一次响应包，包中只带一个NotFinish标识
 			if len(httpResp.Body) > 0 {
 				_, err = w.Write(httpResp.Body)
 				if err != nil {
@@ -147,6 +150,7 @@ func (s *ProxyServer) DoRequest(ctx context.Context, req *core.HttpRequest, w ht
 					return 500, nil
 				}
 			}
+			// 对于大文件 会分多次返回相应，NotFinish标识这次响应有没有传输完毕
 			if !httpResp.NotFinish {
 				client.Beat()
 				return 200, nil
@@ -159,7 +163,6 @@ func (s *ProxyServer) DoRequest(ctx context.Context, req *core.HttpRequest, w ht
 func (s *ProxyServer) handleRawConn(conn net.Conn) {
 	// 接受请求
 	service := proxyService{
-		conn:        conn,
 		client:      NewPortalClient(conn),
 		clients:     s.clients,
 		sendTimeout: s.timeout.SendResponse,
@@ -168,8 +171,7 @@ func (s *ProxyServer) handleRawConn(conn net.Conn) {
 }
 
 type proxyService struct {
-	conn        net.Conn
-	client      *PortalClient
+	client      PortalClient
 	clients     *PortalManager
 	sendTimeout time.Duration
 }
@@ -208,29 +210,26 @@ func (s *proxyService) keepConnection() {
 	wg := sync.WaitGroup{}
 	ctx := context.Background()
 	defer func() {
-		if s.client != nil {
+		if s.client.IsLogin {
 			s.clients.Remove(s.client.Name)
 		} else {
-			_ = s.conn.Close()
+			s.client.Close()
 		}
 	}()
 	var tempDelay time.Duration
 	for {
-		header, msg, err := core.Receive(ctx, s.conn, s.GetMsg, true)
+		header, msg, err := core.Receive(ctx, s.client.Conn, s.GetMsg, true)
 		if err != nil {
 			if core.IsClose(err) {
-				logger.Error("receive error, close conn", zap.String("remote", s.conn.RemoteAddr().String()),
+				logger.Error("receive error, close conn",
+					zap.String("remote", s.client.Conn.RemoteAddr().String()),
 					zap.Error(err), zap.String("name", s.client.Name))
 				break
 			}
 			tempDelay = core.CalcDelay(tempDelay)
-			logger.Error("receive error", zap.String("remote", s.conn.RemoteAddr().String()),
+			logger.Error("receive error", zap.String("remote", s.client.Conn.RemoteAddr().String()),
 				zap.Error(err), zap.Duration("retry", tempDelay))
-			if s.client != nil {
-				core.Sleep(tempDelay, s.client.quit)
-			} else {
-				time.Sleep(tempDelay)
-			}
+			core.Sleep(tempDelay, s.client.Quit)
 			continue
 		}
 		logger.Debug("receive msg", zap.String("method", header.Method), zap.Int32("seq", header.Seq))
@@ -248,13 +247,11 @@ func (s *proxyService) keepConnection() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			tc := context.WithValue(ctx, "lock", &s.client.sendMux)
-			tc, _ = context.WithTimeout(tc, s.sendTimeout)
-			err = core.Send(tc, s.conn, respHeader, resp)
+			tc, _ := context.WithTimeout(ctx, s.sendTimeout)
+			err = s.client.Send(tc, respHeader, resp)
 			if err != nil {
 				if !core.IsTemporary(err) {
 					log.Error("send resp error, close conn. ", err)
-					_ = s.conn.Close()
 					return
 				}
 				log.Error("send resp error, ", err)
@@ -266,7 +263,7 @@ func (s *proxyService) keepConnection() {
 
 func (s *proxyService) Login(req *core.LoginRequest) (*core.AckResponse, error) {
 	s.client.Name = req.Name
-	err := s.clients.Add(s.client)
+	err := s.clients.Add(&s.client)
 	if err != nil {
 		return nil, err
 	}
@@ -275,7 +272,7 @@ func (s *proxyService) Login(req *core.LoginRequest) (*core.AckResponse, error) 
 }
 
 func (s *proxyService) Heartbeat(req *core.HeartbeatPkg) (*core.AckResponse, error) {
-	if s.client.Name == "" {
+	if !s.client.IsLogin {
 		return &core.AckResponse{Code: core.AckCode_NotLogin}, nil
 	}
 	s.client.Beat()
@@ -283,7 +280,7 @@ func (s *proxyService) Heartbeat(req *core.HeartbeatPkg) (*core.AckResponse, err
 }
 
 func (s *proxyService) SendHttpResponse(header *core.RpcHeader, resp *core.HttpResponse) error {
-	if s.client.Name == "" {
+	if !s.client.IsLogin {
 		return errors.New("client not login")
 	}
 	err := s.client.SendResponse(header.Seq, &core.RpcMessage{Header: header, Msg: resp})

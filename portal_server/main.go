@@ -11,7 +11,7 @@ import (
 )
 
 var (
-	log    *ptlog.ZapLogger
+	log    *ptlog.ZapLogger // *zap.SugaredLogger
 	logger *zap.Logger
 )
 
@@ -53,6 +53,8 @@ func main() {
 
 	log.Infof("start on param %+v", f)
 	log.Infof("config: %+v", config)
+	// 先启动内部ProxyServer为了将ProxyServer传入HttpServer
+	// HttpServer处理请求直接调用ProxyServer接口从客户端获取响应
 	proxyServer := NewProxyServer(config.ProxyServer.GetHost())
 	proxyServer.SetHosts(config.ProxyServer.Portal)
 	proxyServer.SetTimeout(config.ProxyServer.Timeout)
