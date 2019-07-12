@@ -31,7 +31,6 @@ func (c *PortalClient) Beat() {
 
 func (c *PortalClient) Close() {
 	c.Online = false
-	c.IsLogin = false
 	close(c.Quit)
 	_ = c.Conn.Close()
 }
