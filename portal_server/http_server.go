@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"github.com/cascax/http_portal/core"
 	"go.uber.org/zap"
 	"io"
@@ -46,10 +47,8 @@ func (f httpHandler) serveHTTP(w http.ResponseWriter, r *http.Request) error {
 		defer core.PutBytesBuf(buf)
 		err := readAll(buf, r.Body)
 		if err != nil {
-			w.WriteHeader(500)
 			log.Error("get body error", zap.Error(err), zap.String("remote", r.RemoteAddr))
-			_, err = w.Write([]byte("body error"))
-			return err
+			return writeError(w, "body error", http.StatusInternalServerError)
 		}
 		req.Body = buf.Bytes()
 	}
@@ -60,10 +59,8 @@ func (f httpHandler) serveHTTP(w http.ResponseWriter, r *http.Request) error {
 		if deep, err := strconv.Atoi(v); err == nil {
 			if deep > MaxPortalDeep || r.Header.Get(core.PortalHeaderHost) == r.Host {
 				// portal中次数超过深度 or 上一次也是从当前host传送的，也就是说下一次解析这个host还会再从这走
-				w.WriteHeader(500)
 				log.Errorf("http %s %s, over max portal deep", r.Method, r.RequestURI)
-				_, err = w.Write([]byte("over max portal deep"))
-				return err
+				return writeError(w, "over max portal deep", http.StatusInternalServerError)
 			}
 			req.Header = append(req.Header, &core.HttpRequest_Header{
 				Key:   core.PortalHeaderDeep,
@@ -95,12 +92,18 @@ func (f httpHandler) serveHTTP(w http.ResponseWriter, r *http.Request) error {
 
 	status, err := f.proxyServer.DoRequest(r.Context(), req, w)
 	if err != nil {
-		w.WriteHeader(status)
 		log.Errorf("%d for http %s %s, %s", status, r.Method, r.RequestURI, err)
-		_, err = w.Write([]byte(err.Error()))
-		return err
+		return writeError(w, err.Error(), status)
 	}
 	return nil
+}
+
+func writeError(w http.ResponseWriter, error string, code int) error {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(code)
+	_, e := fmt.Fprintln(w, error)
+	return e
 }
 
 func runHttpServer(server *ProxyServer, host string) {

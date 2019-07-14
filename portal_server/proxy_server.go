@@ -94,13 +94,13 @@ func (s *ProxyServer) DoRequest(ctx context.Context, req *core.HttpRequest, w ht
 	name, ok := s.hosts[req.Host]
 	if !ok {
 		logger.Error("host not found", zap.String("host", req.Host))
-		return 404, errors.New("not found")
+		return http.StatusNotFound, errors.New("not found")
 	}
 	client := s.clients.Get(name)
 	if client == nil {
 		logger.Error("client not found", zap.String("name", name))
 		log.Debugf("client len: %d", s.clients.ClientNum())
-		return 404, errors.New("client not found")
+		return http.StatusNotFound, errors.New("client not found")
 	}
 	// 准备请求客户端，生成请求序列号以及响应返回channel
 	seq, respCh := client.PrepareRequest()
@@ -113,7 +113,7 @@ func (s *ProxyServer) DoRequest(ctx context.Context, req *core.HttpRequest, w ht
 	err = client.Send(sendCtx, header, req)
 	if err != nil {
 		logger.Error("send req error", zap.Error(err))
-		return 500, errors.New("request error")
+		return http.StatusInternalServerError, errors.New("request error")
 	}
 	logger.Debug("send msg", zap.String("method", header.Method), zap.Int32("seq", seq))
 	// receive
@@ -123,11 +123,11 @@ func (s *ProxyServer) DoRequest(ctx context.Context, req *core.HttpRequest, w ht
 		select {
 		case <-rcvCtx.Done():
 			logger.Error("DoRequest.receive done", zap.Error(rcvCtx.Err()))
-			return 500, nil
+			return http.StatusGatewayTimeout, nil
 		case resp := <-respCh:
 			if resp.Header.Error != "" {
 				logger.Error("http response has error", zap.String("error", resp.Header.Error))
-				return 500, errors.New(resp.Header.Error)
+				return http.StatusBadGateway, errors.New(resp.Header.Error)
 			}
 			httpResp := resp.Msg.(*core.HttpResponse)
 			log.Debugf("receive body len: %d (seq %d)", len(httpResp.Body), seq)
@@ -147,13 +147,13 @@ func (s *ProxyServer) DoRequest(ctx context.Context, req *core.HttpRequest, w ht
 				_, err = w.Write(httpResp.Body)
 				if err != nil {
 					logger.Error("write response error", zap.Error(err))
-					return 500, nil
+					return http.StatusInternalServerError, nil
 				}
 			}
 			// 对于大文件 会分多次返回相应，NotFinish标识这次响应有没有传输完毕
 			if !httpResp.NotFinish {
 				client.Beat()
-				return 200, nil
+				return http.StatusOK, nil
 			}
 			client.Beat()
 		}
