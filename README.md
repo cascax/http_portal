@@ -11,7 +11,7 @@
 
 ### 🏠 [Homepage](https://github.com/cascax/http_portal)
 
-![portal](https://user-images.githubusercontent.com/7347114/60699454-84f91200-9f26-11e9-8c83-f9cc20140eb5.png)
+![portal](https://user-images.githubusercontent.com/7347114/61183485-8936d500-a674-11e9-8195-c0d8d94505d2.png)
 
 ## 📦 Install
 
