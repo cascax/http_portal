@@ -84,6 +84,15 @@ func (c *PortalManager) ClientNum() int {
 	return len(c.clients)
 }
 
+func (c *PortalManager) ClearAll() {
+	c.mux.Lock()
+	defer c.mux.Unlock()
+	for k := range c.clients {
+		c.clients[k].Close()
+		delete(c.clients, k)
+	}
+}
+
 // 检查是否在线，超过4个心跳周期之后会被断开连接
 func (c *PortalManager) checkOnline(client *PortalClient) {
 	ticker := time.NewTicker(1 * time.Second)

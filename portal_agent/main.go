@@ -6,6 +6,7 @@ import (
 	"github.com/cascax/http_portal/core"
 	"github.com/cascax/http_portal/portal"
 	"github.com/cascax/http_portal/ptlog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -35,9 +36,7 @@ func (h *RequestHandler) serveHTTP(w http.ResponseWriter, r *http.Request) error
 	req, err := http.NewRequest(r.Method, newUrl.String(), r.Body)
 	if err != nil {
 		log.Error("make request error, ", err)
-		w.WriteHeader(500)
-		_, err = w.Write([]byte(err.Error()))
-		return err
+		return core.WriteHTTPError(w, err.Error(), http.StatusInternalServerError)
 	}
 	defer req.Body.Close()
 	for k, arr := range r.Header {
@@ -54,9 +53,10 @@ func (h *RequestHandler) serveHTTP(w http.ResponseWriter, r *http.Request) error
 	resp, err := client.Do(req)
 	if err != nil {
 		log.Error("do request error, ", err)
-		w.WriteHeader(500)
-		_, err = w.Write([]byte(err.Error()))
-		return err
+		if nerr, ok := err.(net.Error); ok && nerr.Timeout() {
+			return core.WriteHTTPError(w, err.Error(), http.StatusGatewayTimeout)
+		}
+		return core.WriteHTTPError(w, err.Error(), http.StatusBadGateway)
 	}
 	// replace redirect header
 	if v := resp.Header.Get("Location"); len(v) > 0 {
@@ -89,6 +89,11 @@ func defaultConfig() string {
 		panic("can't get config path, " + err.Error())
 	}
 	return path.Join(configPath, DefaultConfigName)
+}
+
+type startFlag struct {
+	Config  string
+	Verbose bool
 }
 
 func main() {
@@ -132,10 +137,10 @@ func main() {
 	}
 	s := portal.NewLocalPortal(config.Agent.Name, handler, config.Agent.RemoteAddr)
 	s.SetTimeout(config.Agent.Timeout)
-	s.Run()
-}
 
-type startFlag struct {
-	Config  string
-	Verbose bool
+	// catch exit signal
+	core.CatchExitSignal(s)
+
+	s.Run()
+	log.Info("portal agent exit")
 }

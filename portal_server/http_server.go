@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"fmt"
 	"github.com/cascax/http_portal/core"
 	"go.uber.org/zap"
 	"io"
@@ -48,7 +47,7 @@ func (f httpHandler) serveHTTP(w http.ResponseWriter, r *http.Request) error {
 		err := readAll(buf, r.Body)
 		if err != nil {
 			log.Error("get body error", zap.Error(err), zap.String("remote", r.RemoteAddr))
-			return writeError(w, "body error", http.StatusInternalServerError)
+			return core.WriteHTTPError(w, "body error", http.StatusInternalServerError)
 		}
 		req.Body = buf.Bytes()
 	}
@@ -60,7 +59,7 @@ func (f httpHandler) serveHTTP(w http.ResponseWriter, r *http.Request) error {
 			if deep > MaxPortalDeep || r.Header.Get(core.PortalHeaderHost) == r.Host {
 				// portal中次数超过深度 or 上一次也是从当前host传送的，也就是说下一次解析这个host还会再从这走
 				log.Errorf("http %s %s, over max portal deep", r.Method, r.RequestURI)
-				return writeError(w, "over max portal deep", http.StatusInternalServerError)
+				return core.WriteHTTPError(w, "over max portal deep", http.StatusInternalServerError)
 			}
 			req.Header = append(req.Header, &core.HttpRequest_Header{
 				Key:   core.PortalHeaderDeep,
@@ -93,23 +92,26 @@ func (f httpHandler) serveHTTP(w http.ResponseWriter, r *http.Request) error {
 	status, err := f.proxyServer.DoRequest(r.Context(), req, w)
 	if err != nil {
 		log.Errorf("%d for http %s %s, %s", status, r.Method, r.RequestURI, err)
-		return writeError(w, err.Error(), status)
+		return core.WriteHTTPError(w, err.Error(), status)
 	}
 	return nil
 }
 
-func writeError(w http.ResponseWriter, error string, code int) error {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.WriteHeader(code)
-	_, e := fmt.Fprintln(w, error)
-	return e
+type stopper struct {
+	hs *http.Server
+}
+
+func (s *stopper) Stop() {
+	_ = s.hs.Close()
 }
 
 func runHttpServer(server *ProxyServer, host string) {
 	handler := httpHandler{proxyServer: server}
 	log.Info("start http server ", host)
-	err := http.ListenAndServe(host, handler)
+	s := &http.Server{Addr: host, Handler: handler}
+	core.CatchExitSignal(&stopper{s})
+
+	err := s.ListenAndServe()
 	if err != nil {
 		if err != http.ErrServerClosed {
 			log.Error("http server closed, ", err)
@@ -117,6 +119,7 @@ func runHttpServer(server *ProxyServer, host string) {
 			log.Info("http server closed")
 		}
 	}
+	server.Stop()
 }
 
 func readAll(buf *bytes.Buffer, r io.Reader) (err error) {

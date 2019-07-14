@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"fmt"
 	"github.com/golang/protobuf/proto"
 	"github.com/pkg/errors"
 	"io"
 	"net"
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -292,6 +294,14 @@ func GetBytesBuf() *bytes.Buffer {
 
 func PutBytesBuf(buf *bytes.Buffer) {
 	bytesPool.Put(buf)
+}
+
+func WriteHTTPError(w http.ResponseWriter, error string, code int) error {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(code)
+	_, e := fmt.Fprintln(w, error)
+	return e
 }
 
 func init() {

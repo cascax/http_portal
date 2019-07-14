@@ -51,9 +51,10 @@ type LocalPortal struct {
 	sendLock     sync.Mutex
 	receiver     core.MessageReceiver
 	isLogin      bool
-	quit         chan struct{}
 	timeout      TimeoutConfig
 	lastTransfer time.Time
+	ctx          context.Context
+	cancelFunc   context.CancelFunc
 }
 
 func NewLocalPortal(name string, handler http.Handler, remoteHost string) *LocalPortal {
@@ -61,12 +62,12 @@ func NewLocalPortal(name string, handler http.Handler, remoteHost string) *Local
 		name:       name,
 		handler:    handler,
 		remoteHost: remoteHost,
-		quit:       make(chan struct{}),
 		timeout: TimeoutConfig{
 			ServerConnect: 5 * time.Second,
 			ServerWrite:   5 * time.Second,
 		},
 	}
+	lp.ctx, lp.cancelFunc = context.WithCancel(context.Background())
 	return lp
 }
 
@@ -92,12 +93,27 @@ func (p *LocalPortal) Run() {
 	p.heartbeatLoop()
 }
 
+func (p *LocalPortal) Stop() {
+	p.cancelFunc()
+	_ = p.conn.Close()
+}
+
+func (p *LocalPortal) isStop() bool {
+	select {
+	case <-p.ctx.Done():
+		return true
+	default:
+	}
+	return false
+}
+
 func (p *LocalPortal) connect() error {
 	conn, err := net.DialTimeout("tcp", p.remoteHost, p.timeout.ServerConnect)
 	if err != nil {
 		return errors.WithMessage(err, "dial error")
 	}
 	p.conn = conn
+	p.isLogin = false
 	logger.Infof("connect server %s", p.remoteHost)
 	go p.receive()
 	return nil
@@ -113,7 +129,7 @@ func (p *LocalPortal) login() error {
 	req := &core.LoginRequest{
 		Name: p.name,
 	}
-	ctx, _ := context.WithTimeout(context.Background(), p.timeout.ServerWrite)
+	ctx, _ := context.WithTimeout(p.ctx, p.timeout.ServerWrite)
 	ctx = context.WithValue(ctx, "lock", &p.sendLock)
 	err := core.Send(ctx, p.conn, header, req)
 	if err != nil {
@@ -142,17 +158,19 @@ func (p *LocalPortal) login() error {
 
 func (p *LocalPortal) heartbeatLoop() {
 	t := time.NewTimer(time.Second * 5)
+	defer logger.Debugf("heartbeat loop exit")
 	failedTime := 0
-	for range t.C {
+	interval := DefaultHeartbeatInterval
+	for {
 		select {
-		case <-p.quit:
+		case <-p.ctx.Done():
 			t.Stop()
-			break
-		default:
+			return
+		case <-t.C:
 		}
 		now := time.Now()
-		if now.Sub(p.lastTransfer) < DefaultHeartbeatInterval {
-			t.Reset(now.Sub(p.lastTransfer))
+		if now.Sub(p.lastTransfer) < interval {
+			t.Reset(p.lastTransfer.Add(interval).Sub(now))
 			continue
 		}
 		shortWait, succ := p.heartbeat()
@@ -167,10 +185,11 @@ func (p *LocalPortal) heartbeatLoop() {
 			failedTime = 0
 		}
 		if shortWait {
-			t.Reset(time.Second * 1)
+			interval = time.Second * 1
 		} else {
-			t.Reset(DefaultHeartbeatInterval)
+			interval = DefaultHeartbeatInterval
 		}
+		t.Reset(interval)
 	}
 }
 
@@ -182,7 +201,6 @@ func (p *LocalPortal) heartbeat() (shortWait bool, succ bool) {
 		}
 		return true, false
 	}
-	ctx := context.Background()
 	seq, respCh := p.receiver.PrepareRequest()
 	defer p.receiver.DeleteSeq(seq)
 	respHeader := &core.RpcHeader{
@@ -192,17 +210,21 @@ func (p *LocalPortal) heartbeat() (shortWait bool, succ bool) {
 	req := &core.HeartbeatPkg{
 		Timestamp: time.Now().Unix(),
 	}
-	tc := context.WithValue(ctx, "lock", &p.sendLock)
-	tc, _ = context.WithTimeout(ctx, p.timeout.ServerWrite)
+	tc := context.WithValue(p.ctx, "lock", &p.sendLock)
+	tc, _ = context.WithTimeout(tc, p.timeout.ServerWrite)
 	err := core.Send(tc, p.conn, respHeader, req)
 	if err != nil {
+		if p.isStop() {
+			return false, false
+		}
 		if !core.IsTemporary(err) {
 			logger.Errorf("send heartbeat error, close conn, %s", err.Error())
 			err = p.connect()
 			if err != nil {
 				logger.Errorf("reconnect error, %s", err.Error())
+			} else {
+				_ = p.login()
 			}
-			_ = p.login()
 			return true, false
 		}
 		logger.Errorf("send heartbeat error, %s", err.Error())
@@ -234,23 +256,26 @@ func (p *LocalPortal) heartbeat() (shortWait bool, succ bool) {
 }
 
 func (p *LocalPortal) receive() {
-	ctx := context.Background()
+	defer logger.Debugf("receive loop exit")
 	var tempDelay time.Duration
 	for {
 		select {
-		case <-p.quit:
-			break
+		case <-p.ctx.Done():
+			return
 		default:
 		}
-		header, msg, err := core.Receive(ctx, p.conn, p.getMsg, true)
+		header, msg, err := core.Receive(p.ctx, p.conn, p.getMsg, true)
 		if err != nil {
+			if p.isStop() {
+				return
+			}
 			if core.IsClose(err) {
 				logger.Errorf("receive error, close conn, remote:%s err:%s", p.conn.RemoteAddr(), err)
 				return
 			}
 			tempDelay = core.CalcDelay(tempDelay)
 			logger.Errorf("receive error, retry in:%s, remote:%s error:%s", tempDelay, p.conn.RemoteAddr(), err)
-			core.Sleep(tempDelay, p.quit)
+			core.Sleep(tempDelay, p.ctx.Done())
 			continue
 		}
 
@@ -305,7 +330,7 @@ func (p *LocalPortal) loginGetMsg(header *core.RpcHeader) (proto.Message, error)
 func (p *LocalPortal) httpRequest(header *core.RpcHeader, req *core.HttpRequest) {
 	errResp := &core.HttpResponse{Status: 500}
 	respHeader := core.NewResponseHeader(header)
-	r, err := parseHttpRequest(context.Background(), req)
+	r, err := parseHttpRequest(p.ctx, req)
 	if err != nil {
 		logger.Errorf("parse http request error, %s", err.Error())
 		respHeader.Error = err.Error()
@@ -327,7 +352,7 @@ func (p *LocalPortal) httpRequest(header *core.RpcHeader, req *core.HttpRequest)
 }
 
 func (p *LocalPortal) sendHttpResponse(header *core.RpcHeader, resp *core.HttpResponse) error {
-	ctx := context.WithValue(context.Background(), "lock", &p.sendLock)
+	ctx := context.WithValue(p.ctx, "lock", &p.sendLock)
 	err := core.Send(ctx, p.conn, header, resp)
 	if err != nil {
 		logger.Errorf("send http response error, %s", err.Error())
@@ -386,7 +411,7 @@ func (w *HttpResponseWriter) Write(data []byte) (int, error) {
 	if e != nil {
 		return 0, e
 	}
-	copy(w.buf[w.bufLen:], data)
+	copy(w.buf[w.bufLen:w.bufLen+l], data)
 	w.bufLen += l
 	if w.bufLen >= ResponseSizeLimit {
 		e := w.Send(false)

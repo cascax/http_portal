@@ -13,12 +13,13 @@ import (
 )
 
 type ProxyServer struct {
-	host     string
-	listener *net.TCPListener
-	clients  *PortalManager
-	quit     chan struct{}
-	hosts    map[string]string
-	timeout  ProxyTimeoutConfig
+	host       string
+	listener   *net.TCPListener
+	clients    *PortalManager
+	hosts      map[string]string
+	timeout    ProxyTimeoutConfig
+	ctx        context.Context
+	cancelFunc context.CancelFunc
 }
 
 func NewProxyServer(host string) *ProxyServer {
@@ -32,6 +33,7 @@ func NewProxyServer(host string) *ProxyServer {
 			SendResponse:    HeartbeatInterval,
 		},
 	}
+	s.ctx, s.cancelFunc = context.WithCancel(context.Background())
 	return s
 }
 
@@ -48,6 +50,21 @@ func (s *ProxyServer) SetTimeout(t ProxyTimeoutConfig) {
 }
 
 func (s *ProxyServer) Start() error {
+	if err := s.listen(); err != nil {
+		return err
+	}
+	go s.accept()
+	return nil
+}
+
+func (s *ProxyServer) Stop() {
+	s.cancelFunc()
+	_ = s.listener.Close()
+	s.clients.ClearAll()
+	log.Info("proxy server stop")
+}
+
+func (s *ProxyServer) listen() error {
 	addr, err := net.ResolveTCPAddr("tcp", s.host)
 	if err != nil {
 		log.Info("resolve addr: ", err)
@@ -58,9 +75,7 @@ func (s *ProxyServer) Start() error {
 		log.Info("listen: ", err)
 		return err
 	}
-	//defer s.listener.Close()
 	log.Info("listening tcp ", s.host)
-	go s.accept()
 	return nil
 }
 
@@ -71,18 +86,19 @@ func (s *ProxyServer) accept() {
 		if err != nil {
 			if core.IsTemporary(err) {
 				tempDelay = core.CalcDelay(tempDelay)
-				log.Infof("Accept error: %v; retrying in %v", err, tempDelay)
-				core.Sleep(tempDelay, s.quit)
+				log.Errorf("Accept error: %v; retrying in %v", err, tempDelay)
+				core.Sleep(tempDelay, s.ctx.Done())
 				continue
 			}
-			logger.Info("done serving Accept", zap.Error(err))
-
-			select {
-			case <-s.quit:
+			if isStop(s.ctx) {
 				return
-			default:
 			}
-			return
+			logger.Error("done serving Accept", zap.Error(err))
+			err = s.listen()
+			if err != nil {
+				logger.Error("listen failed, accept exit")
+				return
+			}
 		}
 		tempDelay = 0
 
@@ -123,6 +139,9 @@ func (s *ProxyServer) DoRequest(ctx context.Context, req *core.HttpRequest, w ht
 		select {
 		case <-rcvCtx.Done():
 			logger.Error("DoRequest.receive done", zap.Error(rcvCtx.Err()))
+			if firstReceive {
+				return http.StatusGatewayTimeout, errors.New("receive resp timeout")
+			}
 			return http.StatusGatewayTimeout, nil
 		case resp := <-respCh:
 			if resp.Header.Error != "" {
@@ -167,7 +186,7 @@ func (s *ProxyServer) handleRawConn(conn net.Conn) {
 		clients:     s.clients,
 		sendTimeout: s.timeout.SendResponse,
 	}
-	go service.keepConnection()
+	go service.keepConnection(s.ctx)
 }
 
 type proxyService struct {
@@ -206,11 +225,11 @@ func (s *proxyService) processMsg(header *core.RpcHeader, message proto.Message)
 	}
 }
 
-func (s *proxyService) keepConnection() {
+func (s *proxyService) keepConnection(ctx context.Context) {
 	wg := sync.WaitGroup{}
-	ctx := context.Background()
 	defer func() {
 		if s.client.IsLogin {
+			logger.Info("client close conn, remove client", zap.String("name", s.client.Name))
 			s.clients.Remove(s.client.Name)
 		} else {
 			s.client.Close()
@@ -220,6 +239,9 @@ func (s *proxyService) keepConnection() {
 	for {
 		header, msg, err := core.Receive(ctx, s.client.Conn, s.GetMsg, true)
 		if err != nil {
+			if isStop(ctx) {
+				return
+			}
 			if core.IsClose(err) {
 				logger.Error("receive error, close conn",
 					zap.String("remote", s.client.Conn.RemoteAddr().String()),
@@ -290,4 +312,13 @@ func (s *proxyService) SendHttpResponse(header *core.RpcHeader, resp *core.HttpR
 		return err
 	}
 	return nil
+}
+
+func isStop(ctx context.Context) bool {
+	select {
+	case <-ctx.Done():
+		return true
+	default:
+	}
+	return false
 }
