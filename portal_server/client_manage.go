@@ -62,7 +62,7 @@ func (c *PortalManager) Add(client *PortalClient) error {
 
 func (c *PortalManager) Remove(name string) {
 	c.mux.Lock()
-	c.mux.Unlock()
+	defer c.mux.Unlock()
 	if ct, ok := c.clients[name]; ok {
 		ct.Close()
 		delete(c.clients, name)
