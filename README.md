@@ -16,15 +16,11 @@
 ## 📦 Install
 
 ```sh
-git clone https://github.com/cascax/http_portal.git
-
 # install agent
-cd portal_agent
-go install
+go get -u github.com/cascax/http_portal/portal_agent
 
 # install server
-cd portal_server
-go install
+go get -u github.com/cascax/http_portal/portal_server
 ```
 
 ## 🚀 Usage

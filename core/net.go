@@ -22,9 +22,6 @@ const (
 )
 
 var beginFlag = make([]byte, 12)
-var protoBufPool = sync.Pool{New: func() interface{} {
-	return proto.NewBuffer(make([]byte, 0, DefaultMsgSize))
-}}
 var bytesPool = sync.Pool{New: func() interface{} {
 	return bytes.NewBuffer(make([]byte, 0, DefaultMsgSize))
 }}
@@ -277,13 +274,13 @@ func Sleep(tempDelay time.Duration, cancel <-chan struct{}) {
 }
 
 func GetProtoBuf() *proto.Buffer {
-	buf := protoBufPool.Get().(*proto.Buffer)
+	buf := bytesPool.Get().(*bytes.Buffer)
 	buf.Reset()
-	return buf
+	return proto.NewBuffer(buf.Bytes())
 }
 
 func PutProtoBuf(buf *proto.Buffer) {
-	protoBufPool.Put(buf)
+	bytesPool.Put(bytes.NewBuffer(buf.Bytes()))
 }
 
 func GetBytesBuf() *bytes.Buffer {
