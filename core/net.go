@@ -92,7 +92,7 @@ func Receive(ctx context.Context, conn net.Conn, newMsg func(*RpcHeader) (proto.
 	}
 	// read
 	headerData := make([]byte, 12)
-	_, err = read(conn, headerData, len(headerData))
+	_, err = io.ReadAtLeast(conn, headerData, len(headerData))
 	if err != nil {
 		return nil, nil, newError(err, "read header error")
 	}
@@ -119,7 +119,7 @@ func Receive(ctx context.Context, conn net.Conn, newMsg func(*RpcHeader) (proto.
 		buf.SetBuf(data)
 	}
 	data = data[:bodyLen]
-	_, err = read(conn, data, int(bodyLen))
+	_, err = io.ReadAtLeast(conn, data, int(bodyLen))
 	if err != nil {
 		return nil, nil, newError(err, "read body error")
 	}
@@ -143,21 +143,6 @@ func Receive(ctx context.Context, conn net.Conn, newMsg func(*RpcHeader) (proto.
 		return header, nil, newError(err, "unmarshal msg error")
 	}
 	return header, msg, nil
-}
-
-func read(conn net.Conn, data []byte, size int) (int, error) {
-	total := 0
-	for {
-		n, err := conn.Read(data[total:size])
-		if err != nil {
-			return total + n, err
-		}
-		total += n
-		if total >= size {
-			break
-		}
-	}
-	return total, nil
 }
 
 type RpcMessage struct {

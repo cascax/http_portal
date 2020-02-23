@@ -12,7 +12,9 @@
 *.out
 
 *.log
+/.idea
 /test
+/release
 portal_server
 portal_agent
 test.yml
