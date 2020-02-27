@@ -122,16 +122,14 @@ func (p *LocalPortal) connect() error {
 func (p *LocalPortal) login() error {
 	seq, respCh := p.receiver.PrepareRequest()
 	defer p.receiver.DeleteSeq(seq)
-	header := &core.RpcHeader{
+	header := core.RpcHeader{
 		Method: core.MethodLogin,
 		Seq:    seq,
 	}
 	req := &core.LoginRequest{
 		Name: p.name,
 	}
-	ctx, _ := context.WithTimeout(p.ctx, p.timeout.ServerWrite)
-	ctx = context.WithValue(ctx, "lock", &p.sendLock)
-	err := core.Send(ctx, p.conn, header, req)
+	ctx, err := p.sendWithContext(p.ctx, header, req)
 	if err != nil {
 		return errors.WithMessagef(err, "send error, seq(%d)", seq)
 	}
@@ -203,16 +201,14 @@ func (p *LocalPortal) heartbeat() (shortWait bool, succ bool) {
 	}
 	seq, respCh := p.receiver.PrepareRequest()
 	defer p.receiver.DeleteSeq(seq)
-	respHeader := &core.RpcHeader{
+	respHeader := core.RpcHeader{
 		Method: core.MethodHeartbeat,
 		Seq:    seq,
 	}
 	req := &core.HeartbeatPkg{
 		Timestamp: time.Now().Unix(),
 	}
-	tc := context.WithValue(p.ctx, "lock", &p.sendLock)
-	tc, _ = context.WithTimeout(tc, p.timeout.ServerWrite)
-	err := core.Send(tc, p.conn, respHeader, req)
+	ctx, err := p.sendWithContext(p.ctx, respHeader, req)
 	if err != nil {
 		if p.isStop() {
 			return false, false
@@ -232,8 +228,8 @@ func (p *LocalPortal) heartbeat() (shortWait bool, succ bool) {
 	}
 	// receive
 	select {
-	case <-tc.Done():
-		logger.Errorf("heartbeat canceled, %s", tc.Err())
+	case <-ctx.Done():
+		logger.Errorf("heartbeat canceled, %s", ctx.Err())
 		return false, false
 	case respPkg := <-respCh:
 		resp := respPkg.Msg.(*core.AckResponse)
@@ -288,7 +284,7 @@ func (p *LocalPortal) receive() {
 	}
 }
 
-func (p *LocalPortal) getMsg(header *core.RpcHeader) (proto.Message, error) {
+func (p *LocalPortal) getMsg(header core.RpcHeader) (proto.Message, error) {
 	switch header.Method {
 	case core.MethodHttpDo:
 		return &core.HttpRequest{}, nil
@@ -301,7 +297,7 @@ func (p *LocalPortal) getMsg(header *core.RpcHeader) (proto.Message, error) {
 	}
 }
 
-func (p *LocalPortal) processMsg(header *core.RpcHeader, msg proto.Message) error {
+func (p *LocalPortal) processMsg(header core.RpcHeader, msg proto.Message) error {
 	switch header.Method {
 	case core.MethodHttpDo:
 		go p.httpRequest(header, msg.(*core.HttpRequest))
@@ -315,7 +311,7 @@ func (p *LocalPortal) processMsg(header *core.RpcHeader, msg proto.Message) erro
 	}
 }
 
-func (p *LocalPortal) loginGetMsg(header *core.RpcHeader) (proto.Message, error) {
+func (p *LocalPortal) loginGetMsg(header core.RpcHeader) (proto.Message, error) {
 	if len(header.Error) > 0 {
 		return nil, errors.New("login failed, " + header.Error)
 	}
@@ -327,7 +323,7 @@ func (p *LocalPortal) loginGetMsg(header *core.RpcHeader) (proto.Message, error)
 
 // 处理server发来的http请求
 // 解析req后交给http.Handler处理，然后返回结果
-func (p *LocalPortal) httpRequest(header *core.RpcHeader, req *core.HttpRequest) {
+func (p *LocalPortal) httpRequest(header core.RpcHeader, req *core.HttpRequest) {
 	errResp := &core.HttpResponse{Status: 500}
 	respHeader := core.NewResponseHeader(header)
 	r, err := parseHttpRequest(p.ctx, req)
@@ -351,15 +347,19 @@ func (p *LocalPortal) httpRequest(header *core.RpcHeader, req *core.HttpRequest)
 	}
 }
 
-func (p *LocalPortal) sendHttpResponse(header *core.RpcHeader, resp *core.HttpResponse) error {
-	ctx := context.WithValue(p.ctx, "lock", &p.sendLock)
-	err := core.Send(ctx, p.conn, header, resp)
+func (p *LocalPortal) sendHttpResponse(header core.RpcHeader, resp *core.HttpResponse) error {
+	_, err := p.sendWithContext(p.ctx, header, resp)
 	if err != nil {
 		logger.Errorf("send http response error, %s", err.Error())
 		return err
 	}
 	logger.Debugf("send http response, seq:%d len:%d", header.Seq, len(resp.Body))
 	return nil
+}
+
+func (p *LocalPortal) sendWithContext(ctx context.Context, header core.RpcHeader, msg proto.Message) (context.Context, error) {
+	c, _ := context.WithTimeout(core.CtxWithLock(ctx, &p.sendLock), p.timeout.ServerWrite)
+	return c, core.Send(c, p.conn, header, msg)
 }
 
 func parseHttpRequest(ctx context.Context, req *core.HttpRequest) (*http.Request, error) {

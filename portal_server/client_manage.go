@@ -35,8 +35,8 @@ func (c *PortalClient) Close() {
 	_ = c.Conn.Close()
 }
 
-func (c *PortalClient) Send(ctx context.Context, header *core.RpcHeader, msg proto.Message) error {
-	sendCtx := context.WithValue(ctx, "lock", &c.sendMux)
+func (c *PortalClient) Send(ctx context.Context, header core.RpcHeader, msg proto.Message) error {
+	sendCtx := core.CtxWithLock(ctx, &c.sendMux)
 	return core.Send(sendCtx, c.Conn, header, msg)
 }
 

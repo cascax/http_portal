@@ -121,7 +121,7 @@ func (s *ProxyServer) DoRequest(ctx context.Context, req *core.HttpRequest, w ht
 	// 准备请求客户端，生成请求序列号以及响应返回channel
 	seq, respCh := client.PrepareRequest()
 	defer client.DeleteSeq(seq)
-	header := &core.RpcHeader{
+	header := core.RpcHeader{
 		Method: core.MethodHttpDo,
 		Seq:    seq,
 	}
@@ -195,7 +195,7 @@ type proxyService struct {
 	sendTimeout time.Duration
 }
 
-func (s *proxyService) GetMsg(header *core.RpcHeader) (proto.Message, error) {
+func (s *proxyService) GetMsg(header core.RpcHeader) (proto.Message, error) {
 	switch header.Method {
 	// 前两者为请求
 	case core.MethodLogin:
@@ -212,7 +212,7 @@ func (s *proxyService) GetMsg(header *core.RpcHeader) (proto.Message, error) {
 	}
 }
 
-func (s *proxyService) processMsg(header *core.RpcHeader, message proto.Message) (proto.Message, error) {
+func (s *proxyService) processMsg(header core.RpcHeader, message proto.Message) (proto.Message, error) {
 	switch header.Method {
 	case core.MethodLogin:
 		return s.Login(message.(*core.LoginRequest))
@@ -266,6 +266,7 @@ func (s *proxyService) keepConnection(ctx context.Context) {
 			continue
 		}
 
+		// send response
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -301,7 +302,7 @@ func (s *proxyService) Heartbeat(req *core.HeartbeatPkg) (*core.AckResponse, err
 	return &core.AckResponse{Code: core.AckCode_Success}, nil
 }
 
-func (s *proxyService) SendHttpResponse(header *core.RpcHeader, resp *core.HttpResponse) error {
+func (s *proxyService) SendHttpResponse(header core.RpcHeader, resp *core.HttpResponse) error {
 	if !s.client.IsLogin {
 		return errors.New("client not login")
 	}

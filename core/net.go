@@ -26,7 +26,24 @@ var bytesPool = sync.Pool{New: func() interface{} {
 	return bytes.NewBuffer(make([]byte, 0, DefaultMsgSize))
 }}
 
-func Send(ctx context.Context, conn net.Conn, header *RpcHeader, msg proto.Message) error {
+var (
+	emptyRpcHeader = RpcHeader{}
+)
+
+func CtxWithLock(ctx context.Context, mux *sync.Mutex) context.Context {
+	return context.WithValue(ctx, "lock", mux)
+}
+
+func CtxGetLock(ctx context.Context) *sync.Mutex {
+	if v := ctx.Value("lock"); v != nil {
+		if mu, ok := v.(*sync.Mutex); ok {
+			return mu
+		}
+	}
+	return nil
+}
+
+func Send(ctx context.Context, conn net.Conn, header RpcHeader, msg proto.Message) error {
 	if len(header.Method) == 0 {
 		return errors.New("no method set")
 	}
@@ -38,7 +55,7 @@ func Send(ctx context.Context, conn net.Conn, header *RpcHeader, msg proto.Messa
 	// make message data
 	buf := GetProtoBuf()
 	defer PutProtoBuf(buf)
-	err := buf.Marshal(header)
+	err := buf.Marshal(&header)
 	if err != nil {
 		return newError(err, "marshal header error")
 	}
@@ -58,13 +75,9 @@ func Send(ctx context.Context, conn net.Conn, header *RpcHeader, msg proto.Messa
 	}
 
 	// send lock
-	var lock *sync.Mutex
-	if v := ctx.Value("lock"); v != nil {
-		if mu, ok := v.(*sync.Mutex); ok {
-			lock = mu
-			lock.Lock()
-			defer lock.Unlock()
-		}
+	if mu := CtxGetLock(ctx); mu != nil {
+		mu.Lock()
+		defer mu.Unlock()
 	}
 
 	// send data length, header length and data
@@ -83,7 +96,7 @@ func Send(ctx context.Context, conn net.Conn, header *RpcHeader, msg proto.Messa
 	return nil
 }
 
-func Receive(ctx context.Context, conn net.Conn, newMsg func(*RpcHeader) (proto.Message, error), wait bool) (header *RpcHeader, msg proto.Message, err error) {
+func Receive(ctx context.Context, conn net.Conn, newMsg func(RpcHeader) (proto.Message, error), wait bool) (header RpcHeader, msg proto.Message, err error) {
 	if d, ok := ctx.Deadline(); !wait && ok {
 		_ = conn.SetDeadline(d)
 		defer conn.SetDeadline(time.Time{})
@@ -94,10 +107,10 @@ func Receive(ctx context.Context, conn net.Conn, newMsg func(*RpcHeader) (proto.
 	headerData := make([]byte, 12)
 	_, err = io.ReadAtLeast(conn, headerData, len(headerData))
 	if err != nil {
-		return nil, nil, newError(err, "read header error")
+		return emptyRpcHeader, nil, newError(err, "read header error")
 	}
 	if binary.BigEndian.Uint32(headerData[0:]) != RpcBeginFlag {
-		return nil, nil, &NetError{msg: "begin flag wrong", temporary: false}
+		return emptyRpcHeader, nil, &NetError{msg: "begin flag wrong", temporary: false}
 	}
 	bodyLen := binary.BigEndian.Uint32(headerData[4:])
 	headerLen := binary.BigEndian.Uint32(headerData[8:])
@@ -105,7 +118,7 @@ func Receive(ctx context.Context, conn net.Conn, newMsg func(*RpcHeader) (proto.
 		panic(errors.Errorf("body length(0x%x) too big", bodyLen))
 	}
 	if headerLen == 0 {
-		return nil, nil, errors.New("pkg has no header")
+		return emptyRpcHeader, nil, errors.New("pkg has no header")
 	}
 	buf := GetProtoBuf()
 	defer PutProtoBuf(buf)
@@ -121,18 +134,18 @@ func Receive(ctx context.Context, conn net.Conn, newMsg func(*RpcHeader) (proto.
 	data = data[:bodyLen]
 	_, err = io.ReadAtLeast(conn, data, int(bodyLen))
 	if err != nil {
-		return nil, nil, newError(err, "read body error")
+		return emptyRpcHeader, nil, newError(err, "read body error")
 	}
 
 	// unmarshal
-	header = &RpcHeader{}
-	err = proto.Unmarshal(data[:headerLen], header)
+	header = RpcHeader{}
+	err = proto.Unmarshal(data[:headerLen], &header)
 	if err != nil {
-		return nil, nil, newError(err, "unmarshal header error")
+		return emptyRpcHeader, nil, newError(err, "unmarshal header error")
 	}
 	msg, err = newMsg(header)
 	if err != nil {
-		return nil, nil, err
+		return emptyRpcHeader, nil, err
 	}
 	data = data[headerLen:]
 	if len(data) == 0 {
@@ -146,7 +159,7 @@ func Receive(ctx context.Context, conn net.Conn, newMsg func(*RpcHeader) (proto.
 }
 
 type RpcMessage struct {
-	Header *RpcHeader
+	Header RpcHeader
 	Msg    proto.Message
 }
 
@@ -230,8 +243,8 @@ func IsClose(err error) bool {
 	return false
 }
 
-func NewResponseHeader(header *RpcHeader) *RpcHeader {
-	return &RpcHeader{
+func NewResponseHeader(header RpcHeader) RpcHeader {
+	return RpcHeader{
 		Method: RespMethodPrefix + header.Method,
 		Seq:    header.Seq,
 	}
