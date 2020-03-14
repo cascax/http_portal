@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -165,20 +166,20 @@ type RpcMessage struct {
 
 type MessageReceiver struct {
 	Seq      int32
-	requests sync.Map // int32 => proto.Message
+	requests sync.Map // int32 => RpcMessage/other
 }
 
-func (r *MessageReceiver) PrepareRequest() (int32, <-chan *RpcMessage) {
+func (r *MessageReceiver) PrepareRequest() (int32, <-chan interface{}) {
 	s := atomic.AddInt32(&r.Seq, 1)
-	ch := make(chan *RpcMessage)
+	ch := make(chan interface{})
 	r.requests.Store(s, ch)
 	return s, ch
 }
 
-func (r *MessageReceiver) SendResponse(seq int32, msg *RpcMessage) error {
+func (r *MessageReceiver) SendResponse(seq int32, msg interface{}) error {
 	if ch, ok := r.requests.Load(seq); ok {
 		select {
-		case ch.(chan *RpcMessage) <- msg:
+		case ch.(chan interface{}) <- msg:
 			return nil
 		default:
 			return errors.New("resp receiver don't receiving")
@@ -297,6 +298,10 @@ func WriteHTTPError(w http.ResponseWriter, error string, code int) error {
 	w.WriteHeader(code)
 	_, e := fmt.Fprintln(w, error)
 	return e
+}
+
+func IsClosedNetworkError(err error) bool {
+	return strings.Contains(err.Error(), "use of closed network connection")
 }
 
 func init() {

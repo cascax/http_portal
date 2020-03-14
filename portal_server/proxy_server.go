@@ -30,7 +30,7 @@ func NewProxyServer(host string) *ProxyServer {
 		timeout: ProxyTimeoutConfig{
 			SendRequest:     60 * time.Second,
 			ReceiveResponse: 60 * time.Second,
-			SendResponse:    HeartbeatInterval,
+			SendResponse:    core.HeartbeatInterval,
 		},
 	}
 	s.ctx, s.cancelFunc = context.WithCancel(context.Background())
@@ -144,11 +144,22 @@ func (s *ProxyServer) DoRequest(ctx context.Context, req *core.HttpRequest, w ht
 			}
 			return http.StatusGatewayTimeout, nil
 		case resp := <-respCh:
-			if resp.Header.Error != "" {
-				logger.Error("http response has error", zap.String("error", resp.Header.Error))
-				return http.StatusBadGateway, errors.New(resp.Header.Error)
+			switch resp.(type) {
+			case *WebsocketHandshakeMsg:
+				// goto websocket
+				return s.transportDirect(ctx, w, resp.(*WebsocketHandshakeMsg))
+			case *core.RpcMessage:
+				// 普通http response直接在后面处理
+			default:
+				log.Errorf("rpc response type(%T) not support", resp)
+				return http.StatusInternalServerError, errors.New("response invalid")
 			}
-			httpResp := resp.Msg.(*core.HttpResponse)
+			rpcResp := resp.(*core.RpcMessage)
+			if rpcResp.Header.Error != "" {
+				logger.Error("http response has error", zap.String("error", rpcResp.Header.Error))
+				return http.StatusBadGateway, errors.New(rpcResp.Header.Error)
+			}
+			httpResp := rpcResp.Msg.(*core.HttpResponse)
 			log.Debugf("receive body len: %d (seq %d)", len(httpResp.Body), seq)
 			if firstReceive {
 				header := w.Header()
@@ -179,23 +190,93 @@ func (s *ProxyServer) DoRequest(ctx context.Context, req *core.HttpRequest, w ht
 	}
 }
 
+func (s *ProxyServer) transportDirect(ctx context.Context, w http.ResponseWriter, wsMsg *WebsocketHandshakeMsg) (status int, err error) {
+	logger.Info("websocket transport begin", zap.String("clientName", wsMsg.Name))
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		return http.StatusInternalServerError, errors.New("Hijack failed")
+	}
+	conn, buf, err := hijacker.Hijack()
+	if err != nil {
+		return http.StatusInternalServerError, errors.WithMessage(err, "Hijack failed")
+	}
+	defer conn.Close()
+
+	portalConn := wsMsg.Conn
+	defer portalConn.Close()
+	logFields := make([]zap.Field, 0, 4)
+	logFields = append(logFields, zap.String("clientName", wsMsg.Name), zap.Int32("id", wsMsg.WebsocketID))
+	// transport
+	brokenConn := make(chan struct{})
+	closeFunc := func() {
+		close(brokenConn)
+	}
+	once := sync.Once{}
+	go func() {
+		select {
+		case <-ctx.Done():
+			logger.Info("request context done", zap.Error(ctx.Err()))
+		case <-brokenConn:
+		}
+		portalConn.Close()
+	}()
+	go func() {
+		for {
+			n, err := buf.WriteTo(portalConn)
+			if err != nil {
+				if core.IsClosedNetworkError(err) {
+					logger.Info("portal conn closed", logFields...)
+				} else {
+					logger.Error("write to portal conn error", append(logFields, zap.Error(err))...)
+				}
+				break
+			}
+			if n == 0 {
+				logger.Info("http buf conn closed", logFields...)
+				break
+			}
+			logger.Debug("http conn buf write to portal conn", append(logFields, zap.Int64("length", n))...)
+		}
+		once.Do(closeFunc)
+	}()
+	for {
+		n, err := buf.ReadFrom(portalConn)
+		if err != nil {
+			if core.IsClosedNetworkError(err) {
+				logger.Info("portal conn closed", logFields...)
+			} else {
+				logger.Error("read from portal conn error", append(logFields, zap.Error(err))...)
+			}
+			break
+		}
+		if n == 0 {
+			logger.Info("http buf conn closed", logFields...)
+			break
+		}
+		logger.Debug("http conn buf read from portal conn", append(logFields, zap.Int64("length", n))...)
+	}
+	once.Do(closeFunc)
+
+	return 0, nil
+}
+
 func (s *ProxyServer) handleRawConn(conn net.Conn) {
 	// 接受请求
-	service := proxyService{
+	service := portalService{
 		client:      NewPortalClient(conn),
-		clients:     s.clients,
+		manager:     s.clients,
 		sendTimeout: s.timeout.SendResponse,
 	}
 	go service.keepConnection(s.ctx)
 }
 
-type proxyService struct {
+type portalService struct {
 	client      PortalClient
-	clients     *PortalManager
+	manager     *PortalManager
 	sendTimeout time.Duration
 }
 
-func (s *proxyService) GetMsg(header core.RpcHeader) (proto.Message, error) {
+func (s *portalService) GetMsg(header core.RpcHeader) (proto.Message, error) {
 	switch header.Method {
 	// 前两者为请求
 	case core.MethodLogin:
@@ -212,7 +293,7 @@ func (s *proxyService) GetMsg(header core.RpcHeader) (proto.Message, error) {
 	}
 }
 
-func (s *proxyService) processMsg(header core.RpcHeader, message proto.Message) (proto.Message, error) {
+func (s *portalService) processMsg(header core.RpcHeader, message proto.Message) (proto.Message, error) {
 	switch header.Method {
 	case core.MethodLogin:
 		return s.Login(message.(*core.LoginRequest))
@@ -225,14 +306,16 @@ func (s *proxyService) processMsg(header core.RpcHeader, message proto.Message) 
 	}
 }
 
-func (s *proxyService) keepConnection(ctx context.Context) {
+func (s *portalService) keepConnection(ctx context.Context) {
 	wg := sync.WaitGroup{}
 	defer func() {
-		if s.client.IsLogin {
-			logger.Info("client close conn, remove client", zap.String("name", s.client.Name))
-			s.clients.Remove(s.client.Name)
-		} else {
-			s.client.Close()
+		if !s.client.IsWebsocket {
+			if s.client.IsLogin {
+				logger.Info("client close conn, remove client", zap.String("name", s.client.Name))
+				s.manager.Remove(s.client.Name)
+			} else {
+				s.client.Close()
+			}
 		}
 	}()
 	var tempDelay time.Duration
@@ -280,21 +363,46 @@ func (s *proxyService) keepConnection(ctx context.Context) {
 				log.Error("send resp error, ", err)
 			}
 		}()
+
+		if s.client.IsWebsocket {
+			break
+		}
 	}
 	wg.Wait()
 }
 
-func (s *proxyService) Login(req *core.LoginRequest) (*core.AckResponse, error) {
+func (s *portalService) Login(req *core.LoginRequest) (*core.AckResponse, error) {
 	s.client.Name = req.Name
-	err := s.clients.Add(&s.client)
-	if err != nil {
-		return nil, err
+	if req.RespSeq != 0 {
+		// websocket connection
+		s.client.IsLogin = true
+		s.client.IsWebsocket = true
+		s.client.WebsocketID = req.RespSeq
+		originClient := s.manager.Get(req.Name)
+		if originClient == nil {
+			logger.Error("origin client not found", zap.String("name", req.Name))
+			return &core.AckResponse{Code: core.AckCode_Error}, errors.New("client not found")
+		}
+		err := originClient.SendResponse(req.RespSeq, &WebsocketHandshakeMsg{s.client})
+		if err != nil {
+			logger.Error("client send resp error", zap.String("name", s.client.Name),
+				zap.Int32("seq", req.RespSeq), zap.Error(err))
+			return &core.AckResponse{Code: core.AckCode_Error}, err
+		}
+		logger.Info("new websocket client login", zap.String("name", s.client.Name),
+			zap.Int32("respSeq", req.RespSeq))
+	} else {
+		// normal connection
+		err := s.manager.Add(&s.client)
+		if err != nil {
+			return nil, err
+		}
+		logger.Info("new client login", zap.String("name", s.client.Name))
 	}
-	logger.Info("new client login", zap.String("name", s.client.Name))
 	return &core.AckResponse{Code: core.AckCode_Success}, nil
 }
 
-func (s *proxyService) Heartbeat(req *core.HeartbeatPkg) (*core.AckResponse, error) {
+func (s *portalService) Heartbeat(req *core.HeartbeatPkg) (*core.AckResponse, error) {
 	if !s.client.IsLogin {
 		return &core.AckResponse{Code: core.AckCode_NotLogin}, nil
 	}
@@ -302,7 +410,7 @@ func (s *proxyService) Heartbeat(req *core.HeartbeatPkg) (*core.AckResponse, err
 	return &core.AckResponse{Code: core.AckCode_Success}, nil
 }
 
-func (s *proxyService) SendHttpResponse(header core.RpcHeader, resp *core.HttpResponse) error {
+func (s *portalService) SendHttpResponse(header core.RpcHeader, resp *core.HttpResponse) error {
 	if !s.client.IsLogin {
 		return errors.New("client not login")
 	}

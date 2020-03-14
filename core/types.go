@@ -1,6 +1,9 @@
 package core
 
-import "strings"
+import (
+	"strings"
+	"time"
+)
 
 const (
 	RespMethodPrefix    = "RESP_"
@@ -15,6 +18,8 @@ const (
 	PortalHeaderDeep   = PortalHeaderPrefix + "Deep"
 	PortalHeaderHost   = PortalHeaderPrefix + "Host"
 )
+
+var HeartbeatInterval = 10 * time.Second
 
 type Temporary interface {
 	Temporary() bool

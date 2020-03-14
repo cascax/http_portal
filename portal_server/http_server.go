@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"github.com/cascax/http_portal/core"
 	"go.uber.org/zap"
 	"io"
@@ -11,7 +12,7 @@ import (
 )
 
 const (
-	MaxPortalDeep = 5
+	MaxPortalDeep = 3
 )
 
 type httpHandler struct {
@@ -27,6 +28,10 @@ func (f httpHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (f httpHandler) serveHTTP(w http.ResponseWriter, r *http.Request) error {
 	log.Infof("http %s %s%s", r.Method, r.Host, r.URL.Path)
+
+	// TODO: 干掉
+	b, _ := json.Marshal(r.URL)
+	log.Debugf("http %+v %s %v %s %s %s", r, r.URL.String(), r.URL, r.URL.Host, string(b), r.RequestURI)
 
 	req := &core.HttpRequest{
 		Method:     r.Method,

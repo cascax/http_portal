@@ -8,9 +8,11 @@ import (
 	"github.com/pkg/errors"
 	"golang.org/x/net/context"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 )
@@ -18,7 +20,6 @@ import (
 const (
 	ResponseSizeLimit        = 1024 * 1024 * 4
 	ResponseReadSize         = 512
-	DefaultHeartbeatInterval = 5 * time.Second
 )
 
 var logger completeLogger = defaultLogger(0)
@@ -55,6 +56,7 @@ type LocalPortal struct {
 	lastTransfer time.Time
 	ctx          context.Context
 	cancelFunc   context.CancelFunc
+	wsHandler    WebsocketHandler
 }
 
 func NewLocalPortal(name string, handler http.Handler, remoteHost string) *LocalPortal {
@@ -98,6 +100,10 @@ func (p *LocalPortal) Stop() {
 	_ = p.conn.Close()
 }
 
+func (p *LocalPortal) SetWebsocketHandler(h WebsocketHandler) {
+	p.wsHandler = h
+}
+
 func (p *LocalPortal) isStop() bool {
 	select {
 	case <-p.ctx.Done():
@@ -139,7 +145,8 @@ func (p *LocalPortal) login() error {
 	case <-ctx.Done():
 		// 登录超时
 		return errors.WithMessage(ctx.Err(), "login end")
-	case respPkg := <-respCh:
+	case respMsg := <-respCh:
+		respPkg := respMsg.(*core.RpcMessage)
 		if respPkg.Header.Error != "" {
 			return errors.WithMessage(errors.New(respPkg.Header.Error), "login error")
 		}
@@ -155,10 +162,10 @@ func (p *LocalPortal) login() error {
 }
 
 func (p *LocalPortal) heartbeatLoop() {
-	t := time.NewTimer(time.Second * 5)
+	t := time.NewTimer(core.HeartbeatInterval)
 	defer logger.Debugf("heartbeat loop exit")
 	failedTime := 0
-	interval := DefaultHeartbeatInterval
+	interval := core.HeartbeatInterval
 	for {
 		select {
 		case <-p.ctx.Done():
@@ -185,7 +192,7 @@ func (p *LocalPortal) heartbeatLoop() {
 		if shortWait {
 			interval = time.Second * 1
 		} else {
-			interval = DefaultHeartbeatInterval
+			interval = core.HeartbeatInterval
 		}
 		t.Reset(interval)
 	}
@@ -231,7 +238,8 @@ func (p *LocalPortal) heartbeat() (shortWait bool, succ bool) {
 	case <-ctx.Done():
 		logger.Errorf("heartbeat canceled, %s", ctx.Err())
 		return false, false
-	case respPkg := <-respCh:
+	case respMsg := <-respCh:
+		respPkg := respMsg.(*core.RpcMessage)
 		resp := respPkg.Msg.(*core.AckResponse)
 		if resp.Code != core.AckCode_Success {
 			logger.Errorf("heartbeat error, code:%d", resp.Code)
@@ -289,7 +297,7 @@ func (p *LocalPortal) getMsg(header core.RpcHeader) (proto.Message, error) {
 	case core.MethodHttpDo:
 		return &core.HttpRequest{}, nil
 	case core.RespMethodLogin:
-		return p.loginGetMsg(header)
+		return loginGetMsg(header)
 	case core.RespMethodHeartbeat:
 		return &core.AckResponse{}, nil
 	default:
@@ -311,40 +319,43 @@ func (p *LocalPortal) processMsg(header core.RpcHeader, msg proto.Message) error
 	}
 }
 
-func (p *LocalPortal) loginGetMsg(header core.RpcHeader) (proto.Message, error) {
-	if len(header.Error) > 0 {
-		return nil, errors.New("login failed, " + header.Error)
-	}
-	if header.Method != core.RespMethodLogin {
-		return nil, errors.New("login resp error")
-	}
-	return &core.AckResponse{}, nil
-}
-
 // 处理server发来的http请求
 // 解析req后交给http.Handler处理，然后返回结果
 func (p *LocalPortal) httpRequest(header core.RpcHeader, req *core.HttpRequest) {
-	errResp := &core.HttpResponse{Status: 500}
 	respHeader := core.NewResponseHeader(header)
-	r, err := parseHttpRequest(p.ctx, req)
+	r, isWebsocket, err := parseHttpRequest(p.ctx, req)
 	if err != nil {
 		logger.Errorf("parse http request error, %s", err.Error())
-		respHeader.Error = err.Error()
-		_ = p.sendHttpResponse(respHeader, errResp)
+		p.sendHttpError(respHeader, http.StatusInternalServerError, err)
 		return
 	}
-	buf := core.GetBytesBuf()
-	w := newHttpResponseWriter(buf.Bytes(), func(resp *core.HttpResponse) error {
-		return p.sendHttpResponse(respHeader, resp)
-	})
-	defer core.PutBytesBuf(bytes.NewBuffer(w.buf))
-	p.handler.ServeHTTP(w, r)
-	err = w.Send(true)
-	if err != nil {
-		logger.Errorf("send the end resp error, %s", err.Error())
+	if isWebsocket {
+		status, err := p.handleWebsocketRequest(r, respHeader.Seq)
+		if err != nil {
+			logger.Errorf("websocket error, %s", err)
+			p.sendHttpError(respHeader, status, errors.Cause(err))
+			return
+		}
 	} else {
-		p.lastTransfer = time.Now()
+		buf := core.GetBytesBuf()
+		responseWriter := newHttpResponseWriter(buf.Bytes(), func(resp *core.HttpResponse) error {
+			return p.sendHttpResponse(respHeader, resp)
+		})
+		defer core.PutBytesBuf(bytes.NewBuffer(responseWriter.buf))
+		p.handler.ServeHTTP(responseWriter, r)
+		err = responseWriter.Flush(true)
+		if err != nil {
+			logger.Errorf("send the end resp error, %s", err.Error())
+		} else {
+			p.lastTransfer = time.Now()
+		}
 	}
+}
+
+func (p *LocalPortal) sendHttpError(header core.RpcHeader, status int32, err error) {
+	errResp := &core.HttpResponse{Status: status}
+	header.Error = err.Error()
+	_ = p.sendHttpResponse(header, errResp)
 }
 
 func (p *LocalPortal) sendHttpResponse(header core.RpcHeader, resp *core.HttpResponse) error {
@@ -362,7 +373,48 @@ func (p *LocalPortal) sendWithContext(ctx context.Context, header core.RpcHeader
 	return c, core.Send(c, p.conn, header, msg)
 }
 
-func parseHttpRequest(ctx context.Context, req *core.HttpRequest) (*http.Request, error) {
+func (p *LocalPortal) handleWebsocketRequest(req *http.Request, loginSeq int32) (int32, error) {
+	if p.wsHandler == nil {
+		return http.StatusNotImplemented, errors.New("websocket request not support")
+	}
+	config, status, err := GetWebsocketConfig(req)
+	if err != nil {
+		return status, errors.WithMessage(err, "websocket error")
+	}
+	req = req.WithContext(CtxWithWebsocketConfig(req.Context(), config))
+
+	// 建代理服务器
+	wsProxy := newWebsocketProxy(p.ctx, p.timeout)
+	err = wsProxy.Connect(p.remoteHost, &core.LoginRequest{
+		Name:    p.name,
+		RespSeq: loginSeq,
+	})
+	if err != nil {
+		return http.StatusInternalServerError, errors.WithMessage(err, "build websocket proxy error")
+	}
+
+	err = p.wsHandler.Handshake(config, req)
+	if err != nil {
+		wsProxy.WriteErrorResponse(http.StatusForbidden, errors.WithMessage(err, "Forbidden"))
+		return http.StatusForbidden, nil
+	}
+
+	go wsProxy.ServeWebSocket(p.wsHandler, req)
+
+	return http.StatusSwitchingProtocols, nil
+}
+
+func loginGetMsg(header core.RpcHeader) (proto.Message, error) {
+	if len(header.Error) > 0 {
+		return nil, errors.New("login failed, " + header.Error)
+	}
+	if header.Method != core.RespMethodLogin {
+		return nil, errors.Errorf("login resp method(%s) incorrect", header.Method)
+	}
+	return &core.AckResponse{}, nil
+}
+
+func parseHttpRequest(ctx context.Context, req *core.HttpRequest) (*http.Request, bool, error) {
 	r := &http.Request{
 		Method:     req.Method,
 		Proto:      req.ReqProto,
@@ -374,22 +426,31 @@ func parseHttpRequest(ctx context.Context, req *core.HttpRequest) (*http.Request
 	for _, h := range req.Header {
 		r.Header[h.Key] = h.Value
 	}
+	// TODO: 暂不支持tls
+	schema := "http"
+	// 判断websocket
+	websocket := false
+	if r.Method == http.MethodGet && strings.ToLower(r.Header.Get("Upgrade")) == "websocket" &&
+		strings.Contains(strings.ToLower(r.Header.Get("Connection")), "upgrade") {
+		schema = "ws"
+		websocket = true
+	}
+
 	r.Body = newBodyReader(req.Body)
 	var ok bool
 	if r.ProtoMajor, r.ProtoMinor, ok = http.ParseHTTPVersion(req.ReqProto); !ok {
-		return nil, errors.Errorf("%s malformed HTTP version", req.ReqProto)
+		return nil, websocket, errors.Errorf("%s malformed HTTP version", req.ReqProto)
 	}
 	var err error
-	// TODO: 只支持http
-	if req.Url[0] != '/' {
+	if !strings.HasPrefix(req.Url, "/") {
 		req.Url = "/" + req.Url
 	}
-	rawurl := fmt.Sprintf("http://%s%s", req.Host, req.Url)
-	if r.URL, err = url.ParseRequestURI(rawurl); err != nil {
-		return nil, errors.WithMessage(err, "parse uri error")
+	rawUrl := fmt.Sprintf("%s://%s%s", schema, req.Host, req.Url)
+	if r.URL, err = url.ParseRequestURI(rawUrl); err != nil {
+		return nil, websocket, errors.WithMessage(err, "parse uri error")
 	}
 	r.WithContext(ctx)
-	return r, nil
+	return r, websocket, nil
 }
 
 type HttpResponseWriter struct {
@@ -414,7 +475,7 @@ func (w *HttpResponseWriter) Write(data []byte) (int, error) {
 	copy(w.buf[w.bufLen:w.bufLen+l], data)
 	w.bufLen += l
 	if w.bufLen >= ResponseSizeLimit {
-		e := w.Send(false)
+		e := w.Flush(false)
 		if e != nil {
 			return l, e
 		}
@@ -452,7 +513,7 @@ func (w *HttpResponseWriter) ReadFrom(reader io.Reader) (int, error) {
 			return hasRead, e
 		}
 		if hasSend >= ResponseSizeLimit {
-			e = w.Send(false)
+			e = w.Flush(false)
 			if e != nil {
 				return hasRead, e
 			}
@@ -461,7 +522,7 @@ func (w *HttpResponseWriter) ReadFrom(reader io.Reader) (int, error) {
 	}
 }
 
-func (w *HttpResponseWriter) Send(finish bool) error {
+func (w *HttpResponseWriter) Flush(finish bool) error {
 	var resp *core.HttpResponse
 	if w.firstSend {
 		w.mix()
@@ -536,15 +597,15 @@ func newBodyReader(data []byte) *BodyReader {
 type defaultLogger int
 
 func (l defaultLogger) Infof(format string, args ...interface{}) {
-	fmt.Printf(format+"\n", args...)
+	log.Printf(format, args...)
 }
 
 func (l defaultLogger) Errorf(format string, args ...interface{}) {
-	fmt.Printf("error: "+format+"\n", args...)
+	log.Printf("error: "+format, args...)
 }
 
 func (l defaultLogger) Debugf(format string, args ...interface{}) {
-	fmt.Printf(format+"\n", args...)
+	log.Printf(format, args...)
 }
 
 type noDebugLogger struct {

@@ -6,6 +6,9 @@ import (
 	"github.com/pkg/errors"
 	"gopkg.in/yaml.v2"
 	"io/ioutil"
+	"os"
+	"path"
+	"path/filepath"
 	"time"
 )
 
@@ -49,5 +52,19 @@ func ReadConfig(filename string) (*ServerConfig, error) {
 	if err != nil {
 		return nil, errors.WithMessage(err, "unmarshal yaml error")
 	}
+	if len(config.Agent.Name) == 0 {
+		return nil, errors.New("agent.name not configured")
+	}
+	if len(config.Agent.RemoteAddr) == 0 {
+		return nil, errors.New("agent.remote_addr not configured")
+	}
 	return config, nil
+}
+
+func defaultConfigPath() string {
+	configPath, err := filepath.Abs(filepath.Dir(os.Args[0]))
+	if err != nil {
+		panic("can't get config path, " + err.Error())
+	}
+	return path.Join(configPath, DefaultConfigName)
 }

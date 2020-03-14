@@ -11,17 +11,22 @@ import (
 	"time"
 )
 
-var HeartbeatInterval = 5 * time.Second
-
 type PortalClient struct {
 	core.MessageReceiver
-	Conn     net.Conn
-	Name     string
-	LastBeat time.Time
-	Online   bool // TODO: 暂时未用到
-	IsLogin  bool
-	Quit     chan struct{}
-	sendMux  sync.Mutex
+	Conn        net.Conn
+	Name        string
+	LastBeat    time.Time
+	Online      bool // TODO: 暂时未用到
+	IsLogin     bool
+	Quit        chan struct{}
+	IsWebsocket bool
+	WebsocketID int32
+
+	sendMux sync.Mutex
+}
+
+type WebsocketHandshakeMsg struct {
+	PortalClient
 }
 
 func (c *PortalClient) Beat() {
@@ -103,13 +108,13 @@ func (c *PortalManager) checkOnline(client *PortalClient) {
 		case <-ticker.C:
 		}
 		now := time.Now()
-		if now.Sub(client.LastBeat) > 4*HeartbeatInterval {
+		if now.Sub(client.LastBeat) > 4*core.HeartbeatInterval {
 			logger.Error("heartbeat timeout, remove client", zap.Time("lastBeat", client.LastBeat),
 				zap.String("name", client.Name))
 			c.Remove(client.Name)
 			return
 		}
-		if now.Sub(client.LastBeat) > 2*HeartbeatInterval {
+		if now.Sub(client.LastBeat) > 2*core.HeartbeatInterval {
 			client.Online = false
 			continue
 		}

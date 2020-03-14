@@ -28,6 +28,7 @@ message HttpResponse {
 
 message LoginRequest {
     string name = 1;
+    int32 resp_seq = 2;
 }
 
 message HeartbeatPkg {
@@ -41,6 +42,7 @@ message AckResponse {
 enum AckCode {
     Success = 0;
     NotLogin = 1;
+    Error = 2;
 }
 
 message RpcHeader {
