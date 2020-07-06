@@ -18,8 +18,17 @@ import (
 )
 
 const (
-	ResponseSizeLimit        = 1024 * 1024 * 4
-	ResponseReadSize         = 512
+	ResponseSizeLimit = 1024 * 1024 * 4
+	ResponseReadSize  = 512
+)
+
+type heartbeatStatus int
+
+const (
+	hbNotConnect heartbeatStatus = iota
+	hbNotLogin
+	hbOK
+	hbError
 )
 
 var logger completeLogger = defaultLogger(0)
@@ -51,7 +60,7 @@ type LocalPortal struct {
 	conn         net.Conn
 	sendLock     sync.Mutex
 	receiver     core.MessageReceiver
-	isLogin      bool
+	status       heartbeatStatus
 	timeout      TimeoutConfig
 	lastTransfer time.Time
 	ctx          context.Context
@@ -119,7 +128,7 @@ func (p *LocalPortal) connect() error {
 		return errors.WithMessage(err, "dial error")
 	}
 	p.conn = conn
-	p.isLogin = false
+	p.status = hbNotLogin
 	logger.Infof("connect server %s", p.remoteHost)
 	go p.receive()
 	return nil
@@ -157,7 +166,7 @@ func (p *LocalPortal) login() error {
 			logger.Infof("login success")
 		}
 	}
-	p.isLogin = true
+	p.status = hbOK
 	return nil
 }
 
@@ -178,8 +187,8 @@ func (p *LocalPortal) heartbeatLoop() {
 			t.Reset(p.lastTransfer.Add(interval).Sub(now))
 			continue
 		}
-		shortWait, succ := p.heartbeat()
-		if succ {
+		p.status = p.heartbeat()
+		if p.status == hbOK {
 			failedTime = 0
 			p.lastTransfer = time.Now()
 		} else {
@@ -188,24 +197,45 @@ func (p *LocalPortal) heartbeatLoop() {
 		if failedTime >= 5 {
 			_ = p.conn.Close()
 			failedTime = 0
+			p.status = hbNotConnect
 		}
-		if shortWait {
-			interval = time.Second * 1
-		} else {
+
+		switch p.status {
+		case hbOK, hbError:
 			interval = core.HeartbeatInterval
+		case hbNotLogin, hbNotConnect:
+			interval = time.Second * 1
 		}
 		t.Reset(interval)
 	}
 }
 
-func (p *LocalPortal) heartbeat() (shortWait bool, succ bool) {
-	if !p.isLogin {
+func (p *LocalPortal) recoverHeartbeat() heartbeatStatus {
+	switch p.status {
+	case hbNotConnect:
+		err := p.connect()
+		if err != nil {
+			logger.Errorf("reconnect error, %s", err.Error())
+			return hbNotConnect
+		}
+	case hbNotLogin:
 		err := p.login()
 		if err != nil {
 			logger.Errorf("re-login error: %s", err)
+			return hbNotLogin
 		}
-		return true, false
+	default:
+		return hbOK
 	}
+	return hbOK
+}
+
+func (p *LocalPortal) heartbeat() heartbeatStatus {
+	ret := p.recoverHeartbeat()
+	if ret != hbOK {
+		return ret
+	}
+
 	seq, respCh := p.receiver.PrepareRequest()
 	defer p.receiver.DeleteSeq(seq)
 	respHeader := core.RpcHeader{
@@ -218,26 +248,20 @@ func (p *LocalPortal) heartbeat() (shortWait bool, succ bool) {
 	ctx, err := p.sendWithContext(p.ctx, respHeader, req)
 	if err != nil {
 		if p.isStop() {
-			return false, false
+			return hbNotConnect
 		}
 		if !core.IsTemporary(err) {
 			logger.Errorf("send heartbeat error, close conn, %s", err.Error())
-			err = p.connect()
-			if err != nil {
-				logger.Errorf("reconnect error, %s", err.Error())
-			} else {
-				_ = p.login()
-			}
-			return true, false
+			return hbNotConnect
 		}
 		logger.Errorf("send heartbeat error, %s", err.Error())
-		return false, false
+		return hbError
 	}
 	// receive
 	select {
 	case <-ctx.Done():
 		logger.Errorf("heartbeat canceled, %s", ctx.Err())
-		return false, false
+		return hbError
 	case respMsg := <-respCh:
 		respPkg := respMsg.(*core.RpcMessage)
 		resp := respPkg.Msg.(*core.AckResponse)
@@ -245,18 +269,13 @@ func (p *LocalPortal) heartbeat() (shortWait bool, succ bool) {
 			logger.Errorf("heartbeat error, code:%d", resp.Code)
 			if resp.Code == core.AckCode_NotLogin {
 				// 重新登录
-				p.isLogin = false
-				err = p.login()
-				if err != nil {
-					logger.Infof("re-login error: %s", err)
-					return true, false
-				}
+				return hbNotLogin
 			}
 		} else {
 			logger.Debugf("heartbeat ok")
 		}
 	}
-	return false, true
+	return hbOK
 }
 
 func (p *LocalPortal) receive() {
@@ -612,7 +631,7 @@ type noDebugLogger struct {
 	Logger
 }
 
-func (l noDebugLogger) Debugf(format string, args ...interface{}) {}
+func (l noDebugLogger) Debugf(_ string, _ ...interface{}) {}
 
 func SetLogger(l Logger) {
 	if l != nil {
